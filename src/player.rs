@@ -12,53 +12,61 @@ static AUDIO_HANDLE: Lazy<OutputStreamHandle> = Lazy::new(|| {
 
 static GLOBAL_SINK: Lazy<Mutex<Option<Arc<Sink>>>> = Lazy::new(|| Mutex::new(None));
 
-struct StreamWrapper<R: Read> {
+// 再生ズレを解消するためのストリーミングラッパー
+// 読んだデータをすべて Vec に貯めることで、デコーダの「先頭に戻る」要求に完璧に応える
+struct StreamingBuffer<R: Read> {
     inner: R,
-    cache: Vec<u8>,
-    pos: u64,
+    data: Vec<u8>,
+    pos: usize,
 }
 
-impl<R: Read> Read for StreamWrapper<R> {
+impl<R: Read> Read for StreamingBuffer<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if self.pos < self.cache.len() as u64 {
-            let mut cursor = Cursor::new(&self.cache);
-            cursor.set_position(self.pos);
-            let n = cursor.read(buf)?;
-            self.pos += n as u64;
+        // 現在地がキャッシュ内にある場合
+        if self.pos < self.data.len() {
+            let n = (&self.data[self.pos..]).read(buf)?;
+            self.pos += n;
             Ok(n)
         } else {
+            // キャッシュの末尾にいる場合、ネットワークから新しく読む
             let n = self.inner.read(buf)?;
-            if self.cache.len() < 10 * 1024 * 1024 {
-                self.cache.extend_from_slice(&buf[..n]);
+            if n > 0 {
+                self.data.extend_from_slice(&buf[..n]);
+                self.pos += n;
             }
-            self.pos += n as u64;
             Ok(n)
         }
     }
 }
 
-impl<R: Read> Seek for StreamWrapper<R> {
+impl<R: Read> Seek for StreamingBuffer<R> {
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
-        let target_pos = match pos {
-            SeekFrom::Start(n) => n as i64,
-            SeekFrom::Current(n) => self.pos as i64 + n,
-            SeekFrom::End(_) => self.pos as i64, 
+        let new_pos = match pos {
+            SeekFrom::Start(s) => s as i64,
+            SeekFrom::Current(c) => self.pos as i64 + c,
+            SeekFrom::End(_) => return Ok(self.pos as u64), // ストリーミング中のEndシークは無視
         };
-        if target_pos < 0 { return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid seek")); }
-        let target_pos = target_pos as u64;
-        if target_pos <= self.cache.len() as u64 {
-            self.pos = target_pos;
-            Ok(self.pos)
+
+        if new_pos < 0 {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid seek"));
+        }
+
+        let new_pos = new_pos as usize;
+        
+        // すでに読んだ範囲内であれば、単に位置（pos）をずらすだけ
+        if new_pos <= self.data.len() {
+            self.pos = new_pos;
+            Ok(self.pos as u64)
         } else {
-            let diff = target_pos - self.pos;
-            let mut skip_buf = vec![0u8; diff.min(1024 * 1024) as usize];
+            // まだ読んでいない前方へのシークは、実際に読んでキャッシュを埋める
+            let diff = new_pos - self.pos;
+            let mut skip_buf = vec![0u8; diff];
             let _ = self.read(&mut skip_buf)?;
-            Ok(self.pos)
+            Ok(self.pos as u64)
         }
     }
 }
 
-// エラー報告用のチャンネルを引数に追加
 pub fn play_from_url_streaming(url: String, tx_err: tokio::sync::mpsc::Sender<String>) -> Result<()> {
     stop();
     let sink = Arc::new(Sink::try_new(&AUDIO_HANDLE).map_err(|e| anyhow!(e))?);
@@ -66,46 +74,35 @@ pub fn play_from_url_streaming(url: String, tx_err: tokio::sync::mpsc::Sender<St
 
     let sink_thread = sink.clone();
     std::thread::spawn(move || {
-        let client = reqwest::blocking::Client::new();
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build().unwrap();
         
-        // 1. 接続フェーズ
+        let _ = tx_err.blocking_send("Connecting...".into());
         let response = match client.get(&url).send() {
             Ok(res) => res,
-            Err(e) => {
-                let _ = tx_err.blocking_send(format!("接続エラー: {}", e));
-                return;
-            }
+            Err(e) => { let _ = tx_err.blocking_send(format!("HTTP Error: {}", e)); return; }
         };
 
-        // 2. HTTPステータスチェック
         if !response.status().is_success() {
-            let _ = tx_err.blocking_send(format!("HTTPエラー: {} (URL: {})", response.status(), url));
+            let _ = tx_err.blocking_send(format!("404 Not Found (Check URL)"));
             return;
         }
 
-        // 3. デコードフェーズ
-        let stream = StreamWrapper { inner: response, cache: Vec::new(), pos: 0 };
+        let _ = tx_err.blocking_send("Decoding...".into());
+        // StreamingBuffer でデコーダのシーク要求を完全にサポート
+        let stream = StreamingBuffer { inner: response, data: Vec::with_capacity(1024 * 1024), pos: 0 };
+        
         match Decoder::new(stream) {
             Ok(source) => {
+                let _ = tx_err.blocking_send("Playing".into());
                 sink_thread.append(source);
                 sink_thread.play();
             }
-            Err(e) => {
-                let _ = tx_err.blocking_send(format!("再生エラー（デコード失敗）: {:?}", e));
-            }
+            Err(e) => { let _ = tx_err.blocking_send(format!("Decode Error: {:?}", e)); }
         }
     });
     Ok(())
-}
-
-pub fn seek_relative(secs: f64) {
-    if let Ok(lock) = GLOBAL_SINK.lock() {
-        if let Some(sink) = lock.as_ref() {
-            let current = sink.get_pos();
-            let new_pos = current.as_secs_f64() + secs;
-            let _ = sink.try_seek(std::time::Duration::from_secs_f64(new_pos.max(0.0)));
-        }
-    }
 }
 
 pub fn stop() {
@@ -130,4 +127,14 @@ pub fn get_position() -> f64 {
         if let Some(sink) = lock.as_ref() { return sink.get_pos().as_secs_f64(); }
     }
     0.0
+}
+
+pub fn seek_relative(secs: f64) {
+    if let Ok(lock) = GLOBAL_SINK.lock() {
+        if let Some(sink) = lock.as_ref() {
+            let current = sink.get_pos();
+            let new_pos = current.as_secs_f64() + secs;
+            let _ = sink.try_seek(std::time::Duration::from_secs_f64(new_pos.max(0.0)));
+        }
+    }
 }
