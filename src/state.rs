@@ -16,6 +16,8 @@ pub struct AppState {
     pub parsed_lyrics: Vec<(f64, String)>,
     pub search: String,
     pub is_loading: bool,
+    pub load_progress: f64,
+    pub fetch_paused: std::sync::Arc<std::sync::atomic::AtomicBool>, // 追加: フェッチ制御用
     pub error_msg: Option<String>,
     pub status_msg: String,
     pub last_action: String, // 追加: 再生アイコン
@@ -47,6 +49,8 @@ impl AppState {
             parsed_lyrics: vec![],
             search: "".into(),
             is_loading: true,
+            load_progress: 0.0,
+            fetch_paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             error_msg: None,
             status_msg: "Waiting for tracks...".into(),
             last_action: "■".into(),

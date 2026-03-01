@@ -13,7 +13,7 @@ pub fn draw_ui(frame: &mut Frame, state: &AppState) {
         .constraints([
             Constraint::Length(1), // Status Bar
             Constraint::Length(8), // Track List
-            Constraint::Length(5), // Control Panel (ここを強化)
+            Constraint::Length(5), // Control Panel
             Constraint::Min(3),    // Lyrics
             Constraint::Length(3), // Search
             Constraint::Length(1), // Help
@@ -22,16 +22,18 @@ pub fn draw_ui(frame: &mut Frame, state: &AppState) {
 
     // 1. Status Bar
     let status_style = if state.is_paused { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::Green) };
-    frame.render_widget(
-        Paragraph::new(format!(" ● {} Status: {}", state.last_action, state.status_msg))
-            .alignment(Alignment::Right)
-            .style(status_style),
-        chunks[0],
-    );
+    let fetch_status = if state.fetch_paused.load(std::sync::atomic::Ordering::SeqCst) { "PAUSED (Prioritizing Playback)" } else { "Active" };
+    
+    let status_line = Line::from(vec![
+        Span::styled(format!(" {} ", state.last_action), Style::default().bg(Color::White).fg(Color::Black).add_modifier(Modifier::BOLD)),
+        Span::raw(" "),
+        Span::styled(format!("Status: {} | Fetch: {}", state.status_msg, fetch_status), status_style),
+    ]);
+    frame.render_widget(Paragraph::new(status_line).alignment(Alignment::Right), chunks[0]);
 
-    // 2. Track List
-    let list_items: Vec<ListItem> = if state.is_loading {
-        vec![ListItem::new("Loading tracks...")]
+    // 2. Track List (チェックマークを追加)
+    let list_items: Vec<ListItem> = if state.tracks.is_empty() && state.is_loading {
+        vec![ListItem::new("Connecting to API...")]
     } else {
         state.filtered_indices.iter().enumerate().map(|(i, &idx)| {
             let track = &state.tracks[idx];
@@ -46,19 +48,20 @@ pub fn draw_ui(frame: &mut Frame, state: &AppState) {
                 style = style.fg(Color::Cyan);
             }
 
+            // リスト表示
             let prefix = if is_playing { " 󰝚 " } else { "   " };
-            ListItem::new(format!("{}{}- {}", prefix, track.title, track.artist)).style(style)
+            ListItem::new(format!("{}{} - {}", prefix, track.title, track.artist)).style(style)
         }).collect()
     };
 
     let list_block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" 曲リスト ({}/{}曲) ", state.filtered_indices.len(), state.tracks.len()));
+        .title(format!(" 曲リスト: {}% 取得中 ({}/{}曲) ", state.load_progress as i32, state.filtered_indices.len(), state.tracks.len()));
     
     let mut list_state = state.list_state.clone();
     frame.render_stateful_widget(List::new(list_items).block(list_block), chunks[1], &mut list_state);
 
-    // 3. Control Panel (ここを強化して操作を表示)
+    // 3. Control Panel
     let selected_track = state.current_track();
     let playing_track = state.playing_id.as_ref().and_then(|id| {
         state.tracks.iter().find(|t| AppState::id_from_path(&t.path) == *id)
@@ -78,27 +81,20 @@ pub fn draw_ui(frame: &mut Frame, state: &AppState) {
             Span::raw(" "),
             Span::styled(format!("{} - {}", t.title, t.artist), Style::default().add_modifier(Modifier::BOLD)),
         ]));
-        panel_content.push(Line::from(vec![
-            Span::styled(format!("  {}  ", progress), Style::default().fg(Color::Cyan)),
-        ]));
+        panel_content.push(Line::from(vec![Span::styled(format!("  {}  ", progress), Style::default().fg(Color::Cyan))]));
     } else {
-        panel_content.push(Line::from("  (STOPPED)"));
+        panel_content.push(Line::from("  (READY TO PLAY)"));
     }
 
     if let Some(t) = selected_track {
         panel_content.push(Line::from(vec![
-            Span::styled("  SELECTING: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  SELECTED: ", Style::default().fg(Color::DarkGray)),
             Span::raw(format!("{} ", t.title)),
             Span::styled("[ENTER] to Play", Style::default().fg(Color::Yellow)),
         ]));
     }
 
-    frame.render_widget(
-        Paragraph::new(panel_content)
-            .block(panel_block)
-            .alignment(Alignment::Center),
-        chunks[2],
-    );
+    frame.render_widget(Paragraph::new(panel_content).block(panel_block).alignment(Alignment::Center), chunks[2]);
 
     // 4. Karaoke Lyrics
     frame.render_widget(
