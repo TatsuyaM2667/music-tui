@@ -13,6 +13,7 @@ pub struct TrackInfo {
     pub title: String,
     pub artist: String,
     pub album: String,
+    pub track_number: Option<i32>, // 追加
     pub duration: f64,
 }
 

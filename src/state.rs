@@ -17,23 +17,24 @@ pub struct AppState {
     pub search: String,
     pub is_loading: bool,
     pub load_progress: f64,
-    pub fetch_paused: std::sync::Arc<std::sync::atomic::AtomicBool>, // 追加: フェッチ制御用
+    pub fetch_paused: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub error_msg: Option<String>,
     pub status_msg: String,
-    pub last_action: String, // 追加: 再生アイコン
+    pub last_action: String,
     pub tick_count: u64,
     pub playback_pos: f64,
     pub playing_id: Option<String>,
     pub is_paused: bool,
-    pub is_actually_playing: bool, // 追加: デコードが開始されたか
-    }
+    pub is_actually_playing: bool,
+}
 
-    impl AppState {
+impl AppState {
     pub fn new(mut tracks: Vec<TrackInfo>) -> Self {
-        // ... (ソート処理)
+        // ソート順: アーティスト -> アルバム -> トラック番号 -> 曲名
         tracks.sort_by(|a, b| {
             a.artist.to_lowercase().cmp(&b.artist.to_lowercase())
                 .then(a.album.to_lowercase().cmp(&b.album.to_lowercase()))
+                .then(a.track_number.unwrap_or(0).cmp(&b.track_number.unwrap_or(0)))
                 .then(a.title.to_lowercase().cmp(&b.title.to_lowercase()))
         });
 
@@ -65,35 +66,19 @@ pub struct AppState {
     }
 
     pub fn current_track(&self) -> Option<&TrackInfo> {
-        if self.tracks.is_empty() || self.filtered_indices.is_empty() {
-            return None;
-        }
-        
-        let idx = if self.current >= self.filtered_indices.len() {
-            self.filtered_indices[0]
-        } else {
-            self.filtered_indices[self.current]
-        };
-        
+        if self.tracks.is_empty() || self.filtered_indices.is_empty() { return None; }
+        let idx = if self.current >= self.filtered_indices.len() { self.filtered_indices[0] } else { self.filtered_indices[self.current] };
         Some(&self.tracks[idx])
     }
 
     pub fn update_search(&mut self) {
         let search_lower = self.search.to_lowercase();
+        self.filtered_indices = self.tracks.iter().enumerate().filter(|(_, t)| {
+            t.title.to_lowercase().contains(&search_lower) || 
+            t.artist.to_lowercase().contains(&search_lower) ||
+            t.album.to_lowercase().contains(&search_lower)
+        }).map(|(i, _)| i).collect();
         
-        // 検索結果のインデックスを更新
-        self.filtered_indices = self.tracks
-            .iter()
-            .enumerate()
-            .filter(|(_, t)| {
-                t.title.to_lowercase().contains(&search_lower) || 
-                t.artist.to_lowercase().contains(&search_lower) ||
-                t.album.to_lowercase().contains(&search_lower)
-            })
-            .map(|(i, _)| i)
-            .collect();
-        
-        // 選択位置が範囲外にならないように調整
         if self.current >= self.filtered_indices.len() {
             self.current = if self.filtered_indices.is_empty() { 0 } else { self.filtered_indices.len() - 1 };
         }
@@ -101,7 +86,6 @@ pub struct AppState {
     }
 
     pub fn id_from_path(path: &str) -> String {
-        path.trim_start_matches('/')
-            .replace(".mp3", "")
+        path.trim_start_matches('/').replace(".mp3", "")
     }
 }

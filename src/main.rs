@@ -48,6 +48,7 @@ async fn main() -> Result<()> {
 
     let (tx_track, mut rx_track) = tokio::sync::mpsc::channel::<TrackInfo>(100);
     let (tx_progress, mut rx_progress) = tokio::sync::mpsc::channel::<f64>(100);
+    
     let pause_signal = state.fetch_paused.clone();
     tokio::spawn(async move {
         let _ = fetch_tracks_streaming(tx_track, tx_progress, pause_signal).await;
@@ -62,11 +63,9 @@ async fn main() -> Result<()> {
     loop {
         terminal.draw(|f| ui::draw_ui(f, &state))?;
 
-        // --- ステータス受信 ---
         while let Ok(msg) = rx_player_status.try_recv() {
             if msg == "Playing" {
                 state.is_actually_playing = true;
-                // 再生中タイトルを更新
                 let title = state.tracks.iter().find(|t| Some(&t.path) == state.playing_id.as_ref())
                     .map(|t| t.title.clone()).unwrap_or_default();
                 state.status_msg = format!("Playing: {}", title);
@@ -84,6 +83,13 @@ async fn main() -> Result<()> {
         while let Ok(p) = rx_progress.try_recv() { state.load_progress = p; }
         while let Ok(track) = rx_track.try_recv() {
             state.tracks.push(track);
+            // 届くたびにソート: アーティスト -> アルバム -> トラック番号 -> 曲名
+            state.tracks.sort_by(|a, b| {
+                a.artist.to_lowercase().cmp(&b.artist.to_lowercase())
+                    .then(a.album.to_lowercase().cmp(&b.album.to_lowercase()))
+                    .then(a.track_number.unwrap_or(0).cmp(&b.track_number.unwrap_or(0)))
+                    .then(a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+            });
             state.update_search();
             if state.tracks.len() == 1 { state.list_state.select(Some(0)); }
             state.is_loading = state.load_progress < 99.9;
@@ -96,12 +102,11 @@ async fn main() -> Result<()> {
                         state.parsed_lyrics = parse_lrc(&lrc);
                         if state.parsed_lyrics.is_empty() { state.current_lyric = "(No time tags)".into(); }
                     }
-                    Err(_) => { state.current_lyric = "(No lyrics)".into(); }
+                    Err(_) => { state.current_lyric = "(No lyrics found)".into(); }
                 }
             }
         }
 
-        // --- キー入力 ---
         if event::poll(Duration::from_millis(10))? {
             if let Event::Key(key) = event::read()? {
                 let now = std::time::Instant::now();
@@ -144,7 +149,6 @@ async fn main() -> Result<()> {
             }
         }
 
-        // --- 状態更新 & オートプレイ ---
         state.playback_pos = player::get_position();
         update_current_lyric(&mut state);
 
@@ -154,11 +158,10 @@ async fn main() -> Result<()> {
             let is_near_end = state.playback_pos >= duration - 1.0 && duration > 0.0;
 
             if reached_end || is_near_end {
-                // 現在再生していた曲の次の曲を探す
                 let current_playing_idx = state.filtered_indices.iter().position(|&idx| Some(&state.tracks[idx].path) == state.playing_id.as_ref());
                 if let Some(idx_in_filtered) = current_playing_idx {
                     if idx_in_filtered < state.filtered_indices.len() - 1 {
-                        state.current = idx_in_filtered + 1; // 内部インデックスを更新
+                        state.current = idx_in_filtered + 1;
                         state.list_state.select(Some(state.current));
                         state.last_action = "⏭".into();
                         play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone());
