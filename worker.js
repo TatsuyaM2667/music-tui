@@ -11,45 +11,68 @@ export default {
       const chunks = fullData.map(track => JSON.stringify({
         path: track.path,
         lrc: track.lrc,
+        video: track.video,
         title: track.title,
         artist: track.artist,
         album: track.album,
-        duration: track.duration
+        duration: track.duration,
+        track_number: track.track_number || null
       })).join('\n');
       return new Response(chunks, { headers: { "Content-Type": "application/x-ndjson", "Access-Control-Allow-Origin": "*" } });
     }
 
     // --- 2. ストリーミング & 歌詞 ---
-    let type = null;
+    let type = "application/octet-stream";
     let rawKey = null;
 
     if (path.startsWith("/stream/")) {
-      type = "audio/mpeg";
       rawKey = path.replace("/stream/", "");
+      if (rawKey.toLowerCase().endsWith(".mp4")) {
+        type = "video/mp4";
+      } else if (rawKey.toLowerCase().endsWith(".mp3")) {
+        type = "audio/mpeg";
+      }
     } else if (path.startsWith("/lyrics/")) {
       type = "text/plain";
       rawKey = path.replace("/lyrics/", "");
     }
 
-    if (rawKey) {
-      // R2のキーとして考えられるパターンをすべて試す (スラッシュの有無など)
-      const keysToTry = [
-        rawKey,                          // そのまま
-        rawKey.startsWith("/") ? rawKey.slice(1) : rawKey, // 先頭のスラッシュ削除
-        rawKey.startsWith("/") ? rawKey : "/" + rawKey     // 先頭のスラッシュ追加
-      ];
+    if (path.startsWith("/stream/")) {
+      const rawPath = url.pathname.replace("/stream/", ""); // エンコードされたままのパス
+      const decodedPath = decodeURIComponent(rawPath);    // デコードされたパス
+      
+      const keysToTry = new Set([
+        decodedPath,
+        decodedPath.startsWith("/") ? decodedPath.slice(1) : decodedPath,
+        decodedPath.startsWith("/") ? decodedPath : "/" + decodedPath,
+        rawPath,
+        rawPath.startsWith("/") ? rawPath.slice(1) : rawPath
+      ]);
 
-      for (const key of keysToTry) {
-        const file = await env.MUSIC_BUCKET.get(key);
+      for (const key of Array.from(keysToTry)) {
+        const file = request.method === "HEAD"
+          ? await env.MUSIC_BUCKET.head(key)
+          : await env.MUSIC_BUCKET.get(key, {
+              range: request.headers.get("range"),
+              onlyIf: request.headers,
+            });
+
         if (file) {
-          return new Response(file.body, {
-            headers: { "Content-Type": type, "Access-Control-Allow-Origin": "*" }
-          });
+          const headers = new Headers();
+          file.writeHttpMetadata(headers);
+          headers.set("Access-Control-Allow-Origin", "*");
+          headers.set("Content-Type", type);
+          headers.set("Accept-Ranges", "bytes");
+
+          const status = file.body 
+            ? (request.headers.get("range") ? 206 : 200) 
+            : (request.method === "HEAD" ? 200 : 304);
+
+          return new Response(file.body, { headers, status });
         }
       }
 
-      // すべて失敗した場合
-      return new Response(`R2 Key Not Found. Tried: ${JSON.stringify(keysToTry)}`, { status: 404 });
+      return new Response(`R2 Key Not Found. Path: ${decodedPath}, Tried: ${JSON.stringify(Array.from(keysToTry))}`, { status: 404 });
     }
 
     return new Response("Not found", { status: 404 });

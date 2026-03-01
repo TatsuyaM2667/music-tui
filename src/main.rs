@@ -31,6 +31,9 @@ fn restore_terminal() {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // .env ファイルを読み込む
+    let _ = dotenvy::dotenv();
+
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
         restore_terminal();
@@ -112,6 +115,27 @@ async fn main() -> Result<()> {
                 let now = std::time::Instant::now();
                 match state.input_mode {
                     InputMode::Normal => match key.code {
+                        KeyCode::Char('v') => {
+                            let video_info = state.current_track().and_then(|t| {
+                                t.video.as_ref().map(|v| v.clone())
+                            });
+
+                            if let Some(v_path) = video_info {
+                                let url = video_url_from_path(&v_path);
+                                // 確実にオーディオを一時停止させる
+                                player::pause();
+                                state.is_paused = true;
+                                state.last_action = "🎬".into();
+                                
+                                let mut cmd = std::process::Command::new("mpv");
+                                cmd.arg("--ytdl=no");
+                                cmd.arg("--force-window");
+                                cmd.arg("--user-agent=Mozilla/5.0");
+                                cmd.arg(url);
+                                // 動画は最初から再生（長さやイントロが違う可能性があるため）
+                                let _ = cmd.spawn();
+                            }
+                        }
                         KeyCode::Char('q') => break,
                         KeyCode::Char('/') => state.input_mode = InputMode::Editing,
                         KeyCode::Up => { if state.current > 0 { state.current -= 1; state.list_state.select(Some(state.current)); } }
@@ -177,7 +201,7 @@ async fn main() -> Result<()> {
 }
 
 fn play_selected_track(state: &mut AppState, tx_lyrics: tokio::sync::mpsc::Sender<(String, Result<String>)>, tx_status: tokio::sync::mpsc::Sender<String>) {
-    let (path, lrc_path, title) = if let Some(t) = state.current_track() {
+    let (path, lrc_path, _title) = if let Some(t) = state.current_track() {
         (t.path.clone(), t.lrc.clone(), t.title.clone())
     } else { return };
 

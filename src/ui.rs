@@ -36,9 +36,10 @@ pub fn draw_ui(frame: &mut Frame, state: &AppState) {
         .split(chunks[0]);
 
     if let Some(t) = playing_track {
+        let video_icon = if t.video.is_some() { " 🎬" } else { "" };
         frame.render_widget(Paragraph::new(Line::from(vec![
             Span::styled("Title: ", Style::default().fg(Color::Cyan)),
-            Span::styled(&t.title, Style::default().add_modifier(Modifier::BOLD).fg(Color::White)),
+            Span::styled(format!("{}{}", t.title, video_icon), Style::default().add_modifier(Modifier::BOLD).fg(Color::White)),
         ])).alignment(Alignment::Center), panel_inner[0]);
 
         frame.render_widget(Paragraph::new(format!("Artist: {}  /  Album: {}", t.artist, t.album))
@@ -83,11 +84,12 @@ pub fn draw_ui(frame: &mut Frame, state: &AppState) {
             let track = &state.tracks[idx];
             let is_selected = i == state.current;
             let is_playing = state.playing_id.as_ref().map_or(false, |id| id == &track.path);
+            let video_indicator = if track.video.is_some() { " 🎬" } else { "" };
             let mut style = Style::default();
             if is_selected { style = style.bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD); }
             if is_playing && !state.is_paused { style = style.fg(Color::Cyan); }
             let prefix = if is_playing { ">> " } else { "   " };
-            ListItem::new(format!("{}{} - {}", prefix, track.title, track.artist)).style(style)
+            ListItem::new(format!("{}{} - {}{}", prefix, track.title, track.artist, video_indicator)).style(style)
         }).collect()
     };
 
@@ -112,7 +114,7 @@ pub fn draw_ui(frame: &mut Frame, state: &AppState) {
 
     // 5. Help Footer
     frame.render_widget(
-        Paragraph::new("Quit: q | Search: / | Select: Up/Down | Seek: L/R (Hold) | Play: Enter | Pause: Space")
+        Paragraph::new("Quit: q | Search: / | Video: v | Select: Up/Down | Seek: L/R (Hold) | Play: Enter | Space")
             .style(Style::default().fg(Color::DarkGray)),
         chunks[4],
     );

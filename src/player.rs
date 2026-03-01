@@ -103,6 +103,14 @@ pub fn stop() {
     }
 }
 
+pub fn pause() {
+    if let Ok(lock) = GLOBAL_SINK.lock() {
+        if let Some(sink) = lock.as_ref() {
+            sink.pause();
+        }
+    }
+}
+
 pub fn toggle_pause() -> bool {
     if let Ok(lock) = GLOBAL_SINK.lock() {
         if let Some(sink) = lock.as_ref() {
