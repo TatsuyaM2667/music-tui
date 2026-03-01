@@ -11,19 +11,25 @@ pub struct TrackInfo {
     // JSON の duration は f64 なので合わせる
     pub duration: f64,
 
-    // null が来る可能性があるので Option にする
+    // 現在使用していないフィールドはコメントアウトまたは削除して
+    // 58MBのJSONパース時のメモリ負荷と時間を削減します
+    /*
     pub lrc: Option<String>,
     pub date: Option<f64>,
     pub video: Option<String>,
-    pub artistImage: Option<String>,
+    #[serde(rename = "artistImage")]
+    pub artist_image: Option<String>,
     pub cover: Option<CoverInfo>,
+    */
 }
 
+/*
 #[derive(Debug, Deserialize, Clone)]
 pub struct CoverInfo {
     pub format: String,
     pub data: String,
 }
+*/
 
 const BASE_URL: &str = "https://music-api.miuranosuketatsuya06.workers.dev";
 
