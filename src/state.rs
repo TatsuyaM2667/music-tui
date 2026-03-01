@@ -25,10 +25,12 @@ pub struct AppState {
     pub playback_pos: f64,
     pub playing_id: Option<String>,
     pub is_paused: bool,
-}
+    pub is_actually_playing: bool, // 追加: デコードが開始されたか
+    }
 
-impl AppState {
+    impl AppState {
     pub fn new(mut tracks: Vec<TrackInfo>) -> Self {
+        // ... (ソート処理)
         tracks.sort_by(|a, b| {
             a.artist.to_lowercase().cmp(&b.artist.to_lowercase())
                 .then(a.album.to_lowercase().cmp(&b.album.to_lowercase()))
@@ -58,6 +60,7 @@ impl AppState {
             playback_pos: 0.0,
             playing_id: None,
             is_paused: false,
+            is_actually_playing: false,
         }
     }
 

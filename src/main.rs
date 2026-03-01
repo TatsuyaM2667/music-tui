@@ -62,13 +62,19 @@ async fn main() -> Result<()> {
     loop {
         terminal.draw(|f| ui::draw_ui(f, &state))?;
 
+        // --- ステータス受信 ---
         while let Ok(msg) = rx_player_status.try_recv() {
             if msg == "Playing" {
-                state.status_msg = format!("Playing: {}", state.current_track().map_or("", |t| &t.title));
+                state.is_actually_playing = true;
+                // 再生中タイトルを更新
+                let title = state.tracks.iter().find(|t| Some(&t.path) == state.playing_id.as_ref())
+                    .map(|t| t.title.clone()).unwrap_or_default();
+                state.status_msg = format!("Playing: {}", title);
                 if state.parsed_lyrics.is_empty() { state.current_lyric = "● Playing...".into(); }
             } else if msg.contains("Error") {
                 state.error_msg = Some(msg.clone());
                 state.current_lyric = format!("❌ {}", msg);
+                state.is_actually_playing = false;
             } else {
                 state.status_msg = msg.clone();
                 state.current_lyric = format!(">> {}", msg);
@@ -84,19 +90,18 @@ async fn main() -> Result<()> {
         }
 
         while let Ok((path, result)) = rx_lyrics.try_recv() {
-            if let Some(t) = state.current_track() {
-                if t.path == path {
-                    match result {
-                        Ok(lrc) => {
-                            state.parsed_lyrics = parse_lrc(&lrc);
-                            if state.parsed_lyrics.is_empty() { state.current_lyric = "(No time tags)".into(); }
-                        }
-                        Err(_) => { state.current_lyric = "(No lyrics found)".into(); }
+            if state.playing_id.as_ref() == Some(&path) {
+                match result {
+                    Ok(lrc) => {
+                        state.parsed_lyrics = parse_lrc(&lrc);
+                        if state.parsed_lyrics.is_empty() { state.current_lyric = "(No time tags)".into(); }
                     }
+                    Err(_) => { state.current_lyric = "(No lyrics)".into(); }
                 }
             }
         }
 
+        // --- キー入力 ---
         if event::poll(Duration::from_millis(10))? {
             if let Event::Key(key) = event::read()? {
                 let now = std::time::Instant::now();
@@ -139,8 +144,29 @@ async fn main() -> Result<()> {
             }
         }
 
+        // --- 状態更新 & オートプレイ ---
         state.playback_pos = player::get_position();
         update_current_lyric(&mut state);
+
+        if state.playing_id.is_some() && !state.is_paused && state.is_actually_playing {
+            let reached_end = player::is_finished();
+            let duration = state.tracks.iter().find(|t| Some(&t.path) == state.playing_id.as_ref()).map(|t| t.duration).unwrap_or(0.0);
+            let is_near_end = state.playback_pos >= duration - 1.0 && duration > 0.0;
+
+            if reached_end || is_near_end {
+                // 現在再生していた曲の次の曲を探す
+                let current_playing_idx = state.filtered_indices.iter().position(|&idx| Some(&state.tracks[idx].path) == state.playing_id.as_ref());
+                if let Some(idx_in_filtered) = current_playing_idx {
+                    if idx_in_filtered < state.filtered_indices.len() - 1 {
+                        state.current = idx_in_filtered + 1; // 内部インデックスを更新
+                        state.list_state.select(Some(state.current));
+                        state.last_action = "⏭".into();
+                        play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone());
+                    }
+                }
+            }
+        }
+
         if last_tick.elapsed() >= Duration::from_millis(100) { state.tick_count += 1; last_tick = std::time::Instant::now(); }
     }
     restore_terminal();
@@ -159,6 +185,7 @@ fn play_selected_track(state: &mut AppState, tx_lyrics: tokio::sync::mpsc::Sende
     state.current_lyric = "Buffering...".into();
     state.parsed_lyrics.clear();
     state.is_paused = false;
+    state.is_actually_playing = false;
 
     let url = stream_url_from_path(&path);
     let _ = player::play_from_url_streaming(url, tx_status);
@@ -171,8 +198,6 @@ fn play_selected_track(state: &mut AppState, tx_lyrics: tokio::sync::mpsc::Sende
             let res = fetch_lyrics_from_url(&lyrics_url_from_path(&lp)).await;
             let _ = tx.send((path_copy, res)).await;
         });
-    } else {
-        state.current_lyric = "(No LRC available)".into();
     }
 
     let pause_signal = state.fetch_paused.clone();

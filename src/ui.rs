@@ -1,6 +1,6 @@
 use ratatui::{
     prelude::*,
-    widgets::{Paragraph, Block, Borders, Wrap, List, ListItem},
+    widgets::{Paragraph, Block, Borders, Wrap, List, ListItem, Gauge},
 };
 use crate::state::{AppState, InputMode};
 
@@ -11,112 +11,137 @@ pub fn draw_ui(frame: &mut Frame, state: &AppState) {
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Length(1), // Status Bar
+            Constraint::Length(1), // Top Status Bar
             Constraint::Length(8), // Track List
-            Constraint::Length(5), // Control Panel
+            Constraint::Length(9), // Rich Control Panel
             Constraint::Min(3),    // Lyrics
-            Constraint::Length(3), // Search
-            Constraint::Length(1), // Help
+            Constraint::Length(3), // Search Bar
+            Constraint::Length(1), // Help Footer
         ])
         .split(size);
 
-    // 1. Status Bar
+    // 1. Top Status Bar
     let status_style = if state.is_paused { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::Green) };
-    let fetch_status = if state.fetch_paused.load(std::sync::atomic::Ordering::SeqCst) { "PAUSED (Prioritizing Playback)" } else { "Active" };
-    
-    let status_line = Line::from(vec![
+    let top_status = Line::from(vec![
         Span::styled(format!(" {} ", state.last_action), Style::default().bg(Color::White).fg(Color::Black).add_modifier(Modifier::BOLD)),
         Span::raw(" "),
-        Span::styled(format!("Status: {} | Fetch: {}", state.status_msg, fetch_status), status_style),
+        Span::styled(format!("Status: {} | Fetch: {:.1}%", state.status_msg, state.load_progress), status_style),
     ]);
-    frame.render_widget(Paragraph::new(status_line).alignment(Alignment::Right), chunks[0]);
+    frame.render_widget(Paragraph::new(top_status).alignment(Alignment::Right), chunks[0]);
 
-    // 2. Track List (チェックマークを追加)
+    // 2. Track List
     let list_items: Vec<ListItem> = if state.tracks.is_empty() && state.is_loading {
-        vec![ListItem::new("Connecting to API...")]
+        vec![ListItem::new("Connecting...")]
     } else {
         state.filtered_indices.iter().enumerate().map(|(i, &idx)| {
             let track = &state.tracks[idx];
             let is_selected = i == state.current;
-            let is_playing = state.playing_id.as_ref().map_or(false, |id| id == &AppState::id_from_path(&track.path));
+            let is_playing = state.playing_id.as_ref().map_or(false, |id| id == &track.path);
             
             let mut style = Style::default();
-            if is_selected {
-                style = style.bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD);
-            }
-            if is_playing && !state.is_paused {
-                style = style.fg(Color::Cyan);
-            }
+            if is_selected { style = style.bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD); }
+            if is_playing && !state.is_paused { style = style.fg(Color::Cyan); }
 
-            // リスト表示
-            let prefix = if is_playing { " 󰝚 " } else { "   " };
+            let prefix = if is_playing { ">> " } else { "   " };
             ListItem::new(format!("{}{} - {}", prefix, track.title, track.artist)).style(style)
         }).collect()
     };
 
-    let list_block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" 曲リスト: {}% 取得中 ({}/{}曲) ", state.load_progress as i32, state.filtered_indices.len(), state.tracks.len()));
-    
+    let list_block = Block::default().borders(Borders::ALL).title(" Track List ");
     let mut list_state = state.list_state.clone();
     frame.render_stateful_widget(List::new(list_items).block(list_block), chunks[1], &mut list_state);
 
     // 3. Control Panel
-    let selected_track = state.current_track();
-    let playing_track = state.playing_id.as_ref().and_then(|id| {
-        state.tracks.iter().find(|t| AppState::id_from_path(&t.path) == *id)
+    let playing_track = state.playing_id.as_ref().and_then(|path| {
+        state.tracks.iter().find(|t| &t.path == path)
     });
 
-    let panel_block = Block::default().borders(Borders::NONE);
-    let mut panel_content = Vec::new();
+    let panel_block = Block::default().borders(Borders::ALL).title(" Now Playing ");
+    let panel_inner = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Length(1), // Title
+            Constraint::Length(1), // Artist / Album
+            Constraint::Length(1), // Progress Bar
+            Constraint::Length(1), // Buttons
+        ])
+        .split(chunks[2]);
 
     if let Some(t) = playing_track {
+        // --- 曲名 ---
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Title: ", Style::default().fg(Color::Cyan)),
+                Span::styled(&t.title, Style::default().add_modifier(Modifier::BOLD).fg(Color::White)),
+            ])).alignment(Alignment::Center),
+            panel_inner[0]
+        );
+
+        // --- アーティスト / アルバム (白文字に変更) ---
+        frame.render_widget(
+            Paragraph::new(format!("Artist: {}  /  Album: {}", t.artist, t.album))
+                .style(Style::default().fg(Color::White))
+                .alignment(Alignment::Center),
+            panel_inner[1]
+        );
+
+        // --- プログレスバー ---
         let pos = state.playback_pos;
-        let progress = format!("{:.0}:{:02} / {:.0}:{:02}",
-            pos / 60.0, (pos as i32) % 60, t.duration as i32 / 60, (t.duration as i32) % 60);
+        let duration = t.duration.max(1.0);
+        let percent = ((pos / duration) * 100.0).min(100.0) as u16;
+        let progress_label = format!("{:.0}:{:02} / {:.0}:{:02}", 
+            pos / 60.0, (pos as i32) % 60, duration / 60.0, (duration as i32) % 60);
         
-        panel_content.push(Line::from(vec![
-            Span::styled(format!(" {} ", if state.is_paused { "⏸ PAUSED" } else { "▶ PLAYING" }), 
-                Style::default().bg(if state.is_paused { Color::Yellow } else { Color::Green }).fg(Color::Black).add_modifier(Modifier::BOLD)),
-            Span::raw(" "),
-            Span::styled(format!("{} - {}", t.title, t.artist), Style::default().add_modifier(Modifier::BOLD)),
-        ]));
-        panel_content.push(Line::from(vec![Span::styled(format!("  {}  ", progress), Style::default().fg(Color::Cyan))]));
+        let gauge = Gauge::default()
+            .block(Block::default())
+            .gauge_style(Style::default().fg(Color::Cyan).bg(Color::Rgb(30, 30, 30)))
+            .percent(percent)
+            .label(progress_label);
+        frame.render_widget(gauge, panel_inner[2]);
+
+        let controls = Line::from(vec![
+            Span::styled(" [⏮ Prev] ", Style::default().fg(Color::White)),
+            Span::raw("  "),
+            Span::styled(format!(" [{}] ", if state.is_paused { "▶ PLAY" } else { "⏸ PAUSE" }), 
+                Style::default().fg(if state.is_paused { Color::Yellow } else { Color::Green }).add_modifier(Modifier::BOLD)),
+            Span::raw("  "),
+            Span::styled(" [⏭ Next] ", Style::default().fg(Color::White)),
+        ]);
+        frame.render_widget(Paragraph::new(controls).alignment(Alignment::Center), panel_inner[3]);
+
     } else {
-        panel_content.push(Line::from("  (READY TO PLAY)"));
+        frame.render_widget(
+            Paragraph::new("\n(Stopped - Select a song and press Enter)")
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(Color::DarkGray)),
+            chunks[2]
+        );
     }
-
-    if let Some(t) = selected_track {
-        panel_content.push(Line::from(vec![
-            Span::styled("  SELECTED: ", Style::default().fg(Color::DarkGray)),
-            Span::raw(format!("{} ", t.title)),
-            Span::styled("[ENTER] to Play", Style::default().fg(Color::Yellow)),
-        ]));
-    }
-
-    frame.render_widget(Paragraph::new(panel_content).block(panel_block).alignment(Alignment::Center), chunks[2]);
+    frame.render_widget(panel_block, chunks[2]);
 
     // 4. Karaoke Lyrics
+    let lyric_style = if state.is_paused { Style::default().fg(Color::DarkGray) } else { Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD) };
     frame.render_widget(
         Paragraph::new(state.current_lyric.clone())
-            .block(Block::default().borders(Borders::TOP).title(" 歌詞 (Karaoke) "))
+            .block(Block::default().borders(Borders::TOP).title(" Lyrics "))
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: true })
-            .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            .style(lyric_style),
         chunks[3],
     );
 
     // 5. Search Bar
     frame.render_widget(
         Paragraph::new(format!(" > {} ", state.search))
-            .block(Block::default().borders(Borders::ALL).title("  検索: [/]キーで入力 "))
+            .block(Block::default().borders(Borders::ALL).title(" Search: [/] to type "))
             .style(if matches!(state.input_mode, InputMode::Editing) { Style::default().fg(Color::Yellow) } else { Style::default() }),
         chunks[4],
     );
 
-    // 6. Help
+    // 6. Help Footer
     frame.render_widget(
-        Paragraph::new("終了: q | 検索: / | 選択: ↑/↓ | 前後: ←/→ | 再生: Enter | 停止: Space")
+        Paragraph::new("Quit: q | Search: / | Select: Up/Down | Seek: Left/Right | Play: Enter | Pause: Space")
             .style(Style::default().fg(Color::DarkGray)),
         chunks[5],
     );
