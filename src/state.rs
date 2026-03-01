@@ -1,23 +1,28 @@
-use crate::api::Track;
+use crate::api::TrackInfo;
 
 pub struct AppState {
-    pub tracks: Vec<Track>,
-    pub current_index: usize,
+    pub tracks: Vec<TrackInfo>,
+    pub current: usize,
     pub current_lyric: String,
-    pub search_query: String,
+    pub search: String,
 }
 
 impl AppState {
-    pub fn new(tracks: Vec<Track>) -> Self {
+    pub fn new(tracks: Vec<TrackInfo>) -> Self {
         Self {
             tracks,
-            current_index: 0,
+            current: 0,
             current_lyric: "".into(),
-            search_query: "".into(),
+            search: "".into(),
         }
     }
 
-    pub fn current_track(&self) -> &Track {
-        &self.tracks[self.current_index]
+    pub fn current_track(&self) -> &TrackInfo {
+        &self.tracks[self.current]
+    }
+
+    pub fn id_from_path(path: &str) -> String {
+        path.trim_start_matches('/')
+            .replace(".mp3", "")
     }
 }
