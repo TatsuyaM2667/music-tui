@@ -60,12 +60,20 @@ async fn main() -> Result<()> {
     loop {
         terminal.draw(|f| ui::draw_ui(f, &state))?;
 
-        // 1. データ受信の確認
+        // データの受信
         while let Ok(result) = rx.try_recv() {
             state.is_loading = false;
             match result {
-                Ok(t) => {
+                Ok(mut t) => {
+                    // ここで再ソートを徹底
+                    t.sort_by(|a, b| {
+                        a.artist.to_lowercase().cmp(&b.artist.to_lowercase())
+                            .then(a.album.to_lowercase().cmp(&b.album.to_lowercase()))
+                            .then(a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+                    });
                     state.tracks = t;
+                    state.update_search();
+                    state.list_state.select(Some(0));
                     state.status_msg = "Ready.".into();
                 }
                 Err(e) => {
@@ -77,21 +85,69 @@ async fn main() -> Result<()> {
         // 2. キーボードイベントの処理 (50ms待機)
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
-                // key.kind == Press を判定（Linuxでは重要ではないが念のため）
-                match key.code {
-                    KeyCode::Char('q') => break,
-                    KeyCode::Left => {
-                        if state.current > 0 { state.current -= 1; }
-                    }
-                    KeyCode::Right => {
-                        if !state.tracks.is_empty() && state.current < state.tracks.len() - 1 {
-                            state.current += 1;
+                match state.input_mode {
+                    InputMode::Normal => match key.code {
+                        KeyCode::Char('q') => break,
+                        KeyCode::Char('/') => {
+                            state.input_mode = InputMode::Editing;
                         }
-                    }
-                    KeyCode::Char(' ') => {
-                        play_selected_track(&mut state).await;
-                    }
-                    _ => {}
+                        KeyCode::Up => {
+                            if state.current > 0 { 
+                                state.current -= 1; 
+                                state.list_state.select(Some(state.current));
+                            }
+                        }
+                        KeyCode::Down => {
+                            let max = if state.search.is_empty() { state.tracks.len() } else { state.filtered_indices.len() };
+                            if state.current < max - 1 { 
+                                state.current += 1; 
+                                state.list_state.select(Some(state.current));
+                            }
+                        }
+                        KeyCode::Left => {
+                            if state.current > 0 { 
+                                state.current -= 1; 
+                                state.list_state.select(Some(state.current));
+                                state.last_action = "⏮".into();
+                                play_selected_track(&mut state).await;
+                            }
+                        }
+                        KeyCode::Right => {
+                            let max = if state.search.is_empty() { state.tracks.len() } else { state.filtered_indices.len() };
+                            if state.current < max - 1 { 
+                                state.current += 1; 
+                                state.list_state.select(Some(state.current));
+                                state.last_action = "⏭".into();
+                                play_selected_track(&mut state).await;
+                            }
+                        }
+                        KeyCode::Enter => {
+                            state.last_action = "▶".into();
+                            play_selected_track(&mut state).await;
+                        }
+                        KeyCode::Char(' ') => {
+                            state.last_action = if state.is_paused { "▶".into() } else { "⏸".into() };
+                            play_selected_track(&mut state).await;
+                        }
+                        _ => {}
+                    },
+                    InputMode::Editing => match key.code {
+                        KeyCode::Char(c) => {
+                            state.search.push(c);
+                            state.update_search();
+                            state.current = 0; // 検索時は先頭に戻す
+                            state.list_state.select(Some(0));
+                        }
+                        KeyCode::Backspace => {
+                            state.search.pop();
+                            state.update_search();
+                            state.list_state.select(Some(0));
+                        }
+                        KeyCode::Esc | KeyCode::Enter => {
+                            state.input_mode = InputMode::Normal;
+                        }
+                        _ => {}
+                    },
                 }
             }
         }
@@ -124,43 +180,49 @@ Ok(())
 }
 
 async fn play_selected_track(state: &mut AppState) {
-    if state.tracks.is_empty() { return; }
+    let selected = state.current_track();
+    if selected.is_none() { return; }
     
     // 必要な情報を先にコピーして、借用を解除する
     let (id, title, url) = {
-        let track = state.current_track();
+        let track = selected.unwrap(); // ここではis_noneチェック済みなので安全
         let id = AppState::id_from_path(&track.path);
         (id.clone(), track.title.clone(), stream_url(&id))
     };
 
     // 同じ曲が選択されている場合は一時停止/再開
     if state.playing_id.as_ref() == Some(&id) {
-        let is_paused = player::toggle_pause();
-        state.is_paused = is_paused;
-        state.status_msg = if is_paused { "Paused".into() } else { format!("Playing: {}", title) };
+        state.is_paused = player::toggle_pause();
+        state.status_msg = if state.is_paused { "Paused".into() } else { format!("Playing: {}", title) };
         return;
     }
 
     // 違う曲、または初回再生の場合
-    state.status_msg = format!("Fetching: {}...", title);
-    state.current_lyric = "Loading lyrics...".into();
+    state.status_msg = format!("Loading: {}...", title);
+    state.current_lyric = "(Streaming...)".into();
     state.parsed_lyrics.clear();
+    state.playing_id = Some(id.clone());
+    state.is_paused = false;
 
-    // 歌詞取得とパース
+    // --- ストリーミング再生開始 (非同期) ---
+    // ここで .await しないのが重要！
+    if let Err(e) = player::play_from_url_streaming(url) {
+        state.error_msg = Some(format!("Player Error: {}", e));
+        return;
+    }
+
+    // 歌詞取得をバックグラウンドで行う
+    let _id_copy = id.clone();
+    tokio::spawn(async move {
+        // ... (省略)
+    });
+    
+    // 歌詞取得 (簡易的にここで行うが、本当はこれも spawn すべき)
     if let Ok(lrc) = fetch_lyrics(&id).await {
         state.parsed_lyrics = parse_lrc(&lrc);
         if state.parsed_lyrics.is_empty() {
-            state.current_lyric = "(No time-synced lyrics found)".into();
+            state.current_lyric = "(No time-synced lyrics)".into();
         }
-    } else {
-        state.current_lyric = "(No lyrics)".into();
-    }
-
-    // 再生処理
-    if let Ok(_) = player::play_from_url(&url).await {
-        state.playing_id = Some(id);
-        state.is_paused = false;
-        state.status_msg = format!("Playing: {}", title);
     }
 }
 
