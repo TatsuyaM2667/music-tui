@@ -32,7 +32,7 @@ export default {
       } else if (rawKey.toLowerCase().endsWith(".mp3")) {
         type = "audio/mpeg";
       }
-    } else if (path.startsWith("/lyrics/")) {
+} else if (path.startsWith("/lyrics/")) {
       type = "text/plain";
       rawKey = path.replace("/lyrics/", "");
     }

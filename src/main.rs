@@ -136,6 +136,14 @@ async fn main() -> Result<()> {
                                 let _ = cmd.spawn();
                             }
                         }
+                        KeyCode::Char('f') => {
+                            state.toggle_favorite();
+                            state.last_action = "⭐".into();
+                        }
+                        KeyCode::Char('F') => {
+                            state.toggle_favorite_view();
+                            state.last_action = if state.show_favorites_only { "⭐".into() } else { "☰".into() };
+                        }
                         KeyCode::Char('q') => break,
                         KeyCode::Char('/') => state.input_mode = InputMode::Editing,
                         KeyCode::Up => { if state.current > 0 { state.current -= 1; state.list_state.select(Some(state.current)); } }

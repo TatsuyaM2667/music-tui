@@ -37,9 +37,10 @@ pub fn draw_ui(frame: &mut Frame, state: &AppState) {
 
     if let Some(t) = playing_track {
         let video_icon = if t.video.is_some() { " 🎬" } else { "" };
+        let fav_icon = if state.favorites.contains(&t.path) { " ⭐" } else { "" };
         frame.render_widget(Paragraph::new(Line::from(vec![
             Span::styled("Title: ", Style::default().fg(Color::Cyan)),
-            Span::styled(format!("{}{}", t.title, video_icon), Style::default().add_modifier(Modifier::BOLD).fg(Color::White)),
+            Span::styled(format!("{}{}{}", t.title, video_icon, fav_icon), Style::default().add_modifier(Modifier::BOLD).fg(Color::White)),
         ])).alignment(Alignment::Center), panel_inner[0]);
 
         frame.render_widget(Paragraph::new(format!("Artist: {}  /  Album: {}", t.artist, t.album))
@@ -76,7 +77,7 @@ pub fn draw_ui(frame: &mut Frame, state: &AppState) {
         chunks[1],
     );
 
-    // 3. Track List (Borders::ALL を復活)
+    // 3. Track List
     let list_items: Vec<ListItem> = if state.tracks.is_empty() && state.is_loading {
         vec![ListItem::new(format!("Connecting... ({:.1}%)", state.load_progress))]
     } else {
@@ -84,18 +85,29 @@ pub fn draw_ui(frame: &mut Frame, state: &AppState) {
             let track = &state.tracks[idx];
             let is_selected = i == state.current;
             let is_playing = state.playing_id.as_ref().map_or(false, |id| id == &track.path);
+            let is_fav = state.favorites.contains(&track.path);
+            
             let video_indicator = if track.video.is_some() { " 🎬" } else { "" };
+            let fav_indicator = if is_fav { " ⭐" } else { "" };
+            
             let mut style = Style::default();
             if is_selected { style = style.bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD); }
             if is_playing && !state.is_paused { style = style.fg(Color::Cyan); }
+            
             let prefix = if is_playing { ">> " } else { "   " };
-            ListItem::new(format!("{}{} - {}{}", prefix, track.title, track.artist, video_indicator)).style(style)
+            ListItem::new(format!("{}{} - {}{}{}", prefix, track.title, track.artist, video_indicator, fav_indicator)).style(style)
         }).collect()
     };
 
+    let list_title = if state.show_favorites_only {
+        format!(" Favorite Tracks ({}/{} songs) ", state.filtered_indices.len(), state.favorites.len())
+    } else {
+        format!(" All Tracks ({}/{} songs) ", state.filtered_indices.len(), state.tracks.len())
+    };
+
     let list_block = Block::default()
-        .borders(Borders::ALL) // ALLを復活
-        .title(format!(" Track List ({}/{} songs) ", state.filtered_indices.len(), state.tracks.len()));
+        .borders(Borders::ALL)
+        .title(list_title);
     
     let mut list_state = state.list_state.clone();
     frame.render_stateful_widget(List::new(list_items).block(list_block), chunks[2], &mut list_state);
@@ -113,9 +125,13 @@ pub fn draw_ui(frame: &mut Frame, state: &AppState) {
     );
 
     // 5. Help Footer
+    let help_text = if state.show_favorites_only {
+        "Quit: q | Search: / | Fav: f | View All: Shift+F | Video: v | Select: Up/Down | Seek: L/R | Play: Enter/Space"
+    } else {
+        "Quit: q | Search: / | Fav: f | View Favorites: Shift+F | Video: v | Select: Up/Down | Seek: L/R | Play: Enter/Space"
+    };
     frame.render_widget(
-        Paragraph::new("Quit: q | Search: / | Video: v | Select: Up/Down | Seek: L/R (Hold) | Play: Enter | Space")
-            .style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray)),
         chunks[4],
     );
 }

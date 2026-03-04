@@ -1,10 +1,14 @@
 use crate::api::TrackInfo;
 use ratatui::widgets::ListState;
+use std::collections::HashSet;
+use std::fs;
 
 pub enum InputMode {
     Normal,
     Editing,
 }
+
+const FAV_FILE: &str = "favorites.json";
 
 pub struct AppState {
     pub tracks: Vec<TrackInfo>,
@@ -26,10 +30,15 @@ pub struct AppState {
     pub playing_id: Option<String>,
     pub is_paused: bool,
     pub is_actually_playing: bool,
+    pub favorites: HashSet<String>,
+    pub show_favorites_only: bool,
 }
 
 impl AppState {
     pub fn new(mut tracks: Vec<TrackInfo>) -> Self {
+        // お気に入りをファイルから読み込む
+        let favorites = Self::load_favorites().unwrap_or_default();
+
         // ソート順: アーティスト -> アルバム -> トラック番号 -> 曲名
         tracks.sort_by(|a, b| {
             a.artist.to_lowercase().cmp(&b.artist.to_lowercase())
@@ -62,6 +71,22 @@ impl AppState {
             playing_id: None,
             is_paused: false,
             is_actually_playing: false,
+            favorites,
+            show_favorites_only: false,
+        }
+    }
+
+    fn load_favorites() -> Option<HashSet<String>> {
+        if let Ok(data) = fs::read_to_string(FAV_FILE) {
+            serde_json::from_str(&data).ok()
+        } else {
+            None
+        }
+    }
+
+    fn save_favorites(&self) {
+        if let Ok(data) = serde_json::to_string(&self.favorites) {
+            let _ = fs::write(FAV_FILE, data);
         }
     }
 
@@ -74,15 +99,45 @@ impl AppState {
     pub fn update_search(&mut self) {
         let search_lower = self.search.to_lowercase();
         self.filtered_indices = self.tracks.iter().enumerate().filter(|(_, t)| {
-            t.title.to_lowercase().contains(&search_lower) || 
-            t.artist.to_lowercase().contains(&search_lower) ||
-            t.album.to_lowercase().contains(&search_lower)
+            let matches_search = t.title.to_lowercase().contains(&search_lower) || 
+                               t.artist.to_lowercase().contains(&search_lower) ||
+                               t.album.to_lowercase().contains(&search_lower);
+            
+            let matches_favorite = if self.show_favorites_only {
+                self.favorites.contains(&t.path)
+            } else {
+                true
+            };
+
+            matches_search && matches_favorite
         }).map(|(i, _)| i).collect();
         
         if self.current >= self.filtered_indices.len() {
             self.current = if self.filtered_indices.is_empty() { 0 } else { self.filtered_indices.len() - 1 };
         }
         self.list_state.select(Some(self.current));
+    }
+
+    pub fn toggle_favorite(&mut self) {
+        if let Some(track) = self.current_track() {
+            let path = track.path.clone();
+            if self.favorites.contains(&path) {
+                self.favorites.remove(&path);
+            } else {
+                self.favorites.insert(path);
+            }
+            // 保存
+            self.save_favorites();
+
+            if self.show_favorites_only {
+                self.update_search();
+            }
+        }
+    }
+
+    pub fn toggle_favorite_view(&mut self) {
+        self.show_favorites_only = !self.show_favorites_only;
+        self.update_search();
     }
 
     pub fn id_from_path(path: &str) -> String {

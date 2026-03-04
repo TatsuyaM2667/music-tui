@@ -1,0 +1,11 @@
+{
+  "name": "music-tui-sync",
+  "version": "1.0.0",
+  "description": "Sync local music to R2 and update index",
+  "main": "sync.js",
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.500.0",
+    "music-metadata": "^7.14.0",
+    "dotenv": "^16.0.0"
+  }
+}
