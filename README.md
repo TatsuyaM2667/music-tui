@@ -65,7 +65,11 @@ cargo run --release
 
 ## ライセンス
 
-[MIT License](LICENSE)
+[Custom Non-Commercial License](LICENSE)
+
+> **⚠️ 重要：利用規約**
+> 1. **メンションの義務**: 本プロジェクトを使用、改変、または再配布する場合、作者の GitHub アカウント (**[@TatsuyaM2667](https://github.com/TatsuyaM2667)**) を明記（メンションまたはクレジット表記）することが**必須条件**です。
+> 2. **商用利用の禁止**: 本ソフトウェアおよびその派生物を商用目的で利用することは**一切許可されません**。
 
 ---
 
