@@ -1,4 +1,4 @@
-const { S3Client, PutObjectCommand, ListObjectsV2Command } = require("@aws-sdk/client-s3");
+const { S3Client, PutObjectCommand, HeadObjectCommand } = require("@aws-sdk/client-s3");
 const mm = require("music-metadata");
 const fs = require("fs");
 const path = require("path");
@@ -15,6 +15,11 @@ const s3 = new S3Client({
     accessKeyId: process.env.R2_ACCESS_KEY_ID,
     secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
   },
+  // タイムアウト設定の強化
+  requestHandler: {
+    connectionTimeout: 60000,
+    requestTimeout: 60000,
+  }
 });
 
 const BUCKET = process.env.R2_BUCKET_NAME;
@@ -37,7 +42,6 @@ async function sync() {
 
     const relativePath = path.relative(MUSIC_DIR, file).replace(/\\/g, "/");
     
-    // MP3/MP4 の場合はメタデータを抽出
     if (ext === ".mp3" || ext === ".mp4") {
       try {
         const metadata = await mm.parseFile(file);
@@ -52,7 +56,6 @@ async function sync() {
           video: ext === ".mp4" ? relativePath : null
         };
 
-        // 対応するLRCファイルがあるか確認
         const lrcPath = file.replace(ext, ".lrc");
         if (fs.existsSync(lrcPath)) {
           track.lrc = relativePath.replace(ext, ".lrc");
@@ -61,10 +64,8 @@ async function sync() {
         index.push(track);
         console.log(`Processing: ${track.title} - ${track.artist}`);
 
-        // R2にアップロード (既に存在するかチェックは省略して上書き)
         await uploadToR2(file, relativePath);
         
-        // LRCもあればアップロード
         if (track.lrc) {
           await uploadToR2(lrcPath, track.lrc);
         }
@@ -75,28 +76,52 @@ async function sync() {
     }
   }
 
-  // music_index.json を作成してアップロード
   const indexContent = JSON.stringify(index, null, 2);
   fs.writeFileSync("music_index.json", indexContent);
-  await uploadToR2("music_index.json", "music_index.json", "application/json");
+  // インデックスファイルは常に更新する
+  await uploadToR2("music_index.json", "music_index.json", "application/json", true);
 
   console.log("\nSync complete! music_index.json has been updated on R2.");
 }
 
-async function uploadToR2(localPath, r2Key, contentType = null) {
-  const fileContent = fs.readFileSync(localPath);
+async function uploadToR2(localPath, r2Key, contentType = null, force = false) {
+  const stats = fs.statSync(localPath);
+
+  if (!force) {
+    try {
+      const headCommand = new HeadObjectCommand({
+        Bucket: BUCKET,
+        Key: r2Key,
+      });
+      const remoteData = await s3.send(headCommand);
+      
+      // サイズが同じならスキップ
+      if (remoteData.ContentLength === stats.size) {
+        console.log(`Skipped (Matches R2): ${r2Key}`);
+        return;
+      }
+    } catch (err) {
+      // 404 (NotFound) 以外のエラーは警告を出す
+      if (err.name !== "NotFound" && err.$metadata?.httpStatusCode !== 404) {
+        console.warn(`Check failed for ${r2Key}:`, err.message);
+      }
+    }
+  }
+
+  const fileStream = fs.createReadStream(localPath);
   const command = new PutObjectCommand({
     Bucket: BUCKET,
     Key: r2Key,
-    Body: fileContent,
+    Body: fileStream,
+    ContentLength: stats.size,
     ContentType: contentType || getContentType(r2Key),
   });
 
   try {
     await s3.send(command);
-    console.log(`Uploaded: ${r2Key}`);
+    console.log(`Uploaded: ${r2Key} (${(stats.size / 1024 / 1024).toFixed(2)} MB)`);
   } catch (err) {
-    console.error(`Upload error for ${r2Key}:`, err);
+    console.error(`Upload error for ${r2Key}:`, err.message || err);
   }
 }
 
