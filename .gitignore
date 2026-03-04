@@ -1,3 +1,5 @@
 /target
 .env
+.gitignore
 favorites.json
+music_index.json
