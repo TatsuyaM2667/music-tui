@@ -1,12 +1,18 @@
-const { S3Client, PutObjectCommand, HeadObjectCommand } = require("@aws-sdk/client-s3");
+const { S3Client, PutObjectCommand, HeadObjectCommand, GetObjectCommand, ListObjectsV2Command } = require("@aws-sdk/client-s3");
 const mm = require("music-metadata");
 const fs = require("fs");
 const path = require("path");
+const dns = require("dns");
 require("dotenv").config();
 
-// R2の設定 (S3互換APIを使用)
+// Node.js v17+ の IPv6 優先問題を回避
+if (dns.setDefaultResultOrder) {
+  dns.setDefaultResultOrder('ipv4first');
+}
+
 const endpoint = `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
-console.log(`Connecting to R2 endpoint: ${endpoint}`);
+const BUCKET = process.env.R2_BUCKET_NAME;
+const MUSIC_DIR = path.join(require("os").homedir(), "Music");
 
 const s3 = new S3Client({
   region: "auto",
@@ -15,15 +21,11 @@ const s3 = new S3Client({
     accessKeyId: process.env.R2_ACCESS_KEY_ID,
     secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
   },
-  // タイムアウト設定の強化
   requestHandler: {
     connectionTimeout: 60000,
     requestTimeout: 60000,
   }
 });
-
-const BUCKET = process.env.R2_BUCKET_NAME;
-const MUSIC_DIR = path.join(require("os").homedir(), "Music"); // GNOME標準のミュージックフォルダ
 
 async function sync() {
   if (!fs.existsSync(MUSIC_DIR)) {
@@ -31,12 +33,26 @@ async function sync() {
     return;
   }
 
-  const files = getAllFiles(MUSIC_DIR);
-  const index = [];
+  console.log(`Connecting to R2 endpoint: ${endpoint}`);
+  console.log("Fetching existing files from R2...");
+  const existingR2Keys = await listAllR2Objects();
 
-  console.log(`Found ${files.length} files. Starting sync...`);
+  let indexMap = new Map();
+  try {
+    const getCmd = new GetObjectCommand({ Bucket: BUCKET, Key: "music_index.json" });
+    const res = await s3.send(getCmd);
+    const body = await res.Body.transformToString();
+    const oldIndex = JSON.parse(body);
+    oldIndex.forEach(t => indexMap.set(t.path, t));
+    console.log(`Loaded ${indexMap.size} existing tracks from R2 index.`);
+  } catch (e) {
+    console.log("No existing index found or failed to load. Starting fresh.");
+  }
 
-  for (const file of files) {
+  const localFiles = getAllFiles(MUSIC_DIR);
+  console.log(`Found ${localFiles.length} local files. Syncing...`);
+
+  for (const file of localFiles) {
     const ext = path.extname(file).toLowerCase();
     if (![".mp3", ".mp4", ".lrc"].includes(ext)) continue;
 
@@ -44,6 +60,8 @@ async function sync() {
     
     if (ext === ".mp3" || ext === ".mp4") {
       try {
+        await uploadToR2(file, relativePath);
+
         const metadata = await mm.parseFile(file);
         const track = {
           path: relativePath,
@@ -59,29 +77,48 @@ async function sync() {
         const lrcPath = file.replace(ext, ".lrc");
         if (fs.existsSync(lrcPath)) {
           track.lrc = relativePath.replace(ext, ".lrc");
-        }
-
-        index.push(track);
-        console.log(`Processing: ${track.title} - ${track.artist}`);
-
-        await uploadToR2(file, relativePath);
-        
-        if (track.lrc) {
           await uploadToR2(lrcPath, track.lrc);
         }
 
+        indexMap.set(relativePath, track);
+        console.log(`Processed: ${track.title}`);
       } catch (e) {
         console.error(`Error processing ${file}:`, e.message);
       }
     }
   }
 
-  const indexContent = JSON.stringify(index, null, 2);
+  const finalIndex = [];
+  for (const [path, track] of indexMap) {
+    if (existingR2Keys.has(path)) {
+      finalIndex.push(track);
+    } else {
+      console.log(`Removing from index (Not on R2): ${path}`);
+    }
+  }
+
+  const indexContent = JSON.stringify(finalIndex, null, 2);
   fs.writeFileSync("music_index.json", indexContent);
-  // インデックスファイルは常に更新する
   await uploadToR2("music_index.json", "music_index.json", "application/json", true);
 
-  console.log("\nSync complete! music_index.json has been updated on R2.");
+  console.log(`\nSync complete! Index now contains ${finalIndex.length} tracks.`);
+}
+
+async function listAllR2Objects() {
+  const keys = new Set();
+  let continuationToken = null;
+  do {
+    const cmd = new ListObjectsV2Command({
+      Bucket: BUCKET,
+      ContinuationToken: continuationToken
+    });
+    const res = await s3.send(cmd);
+    if (res.Contents) {
+      res.Contents.forEach(obj => keys.add(obj.Key));
+    }
+    continuationToken = res.NextContinuationToken;
+  } while (continuationToken);
+  return keys;
 }
 
 async function uploadToR2(localPath, r2Key, contentType = null, force = false) {
@@ -89,22 +126,13 @@ async function uploadToR2(localPath, r2Key, contentType = null, force = false) {
 
   if (!force) {
     try {
-      const headCommand = new HeadObjectCommand({
-        Bucket: BUCKET,
-        Key: r2Key,
-      });
+      const headCommand = new HeadObjectCommand({ Bucket: BUCKET, Key: r2Key });
       const remoteData = await s3.send(headCommand);
-      
-      // サイズが同じならスキップ
       if (remoteData.ContentLength === stats.size) {
-        console.log(`Skipped (Matches R2): ${r2Key}`);
         return;
       }
     } catch (err) {
-      // 404 (NotFound) 以外のエラーは警告を出す
-      if (err.name !== "NotFound" && err.$metadata?.httpStatusCode !== 404) {
-        console.warn(`Check failed for ${r2Key}:`, err.message);
-      }
+      // NotFound
     }
   }
 
@@ -121,7 +149,7 @@ async function uploadToR2(localPath, r2Key, contentType = null, force = false) {
     await s3.send(command);
     console.log(`Uploaded: ${r2Key} (${(stats.size / 1024 / 1024).toFixed(2)} MB)`);
   } catch (err) {
-    console.error(`Upload error for ${r2Key}:`, err.message || err);
+    console.error(`Upload error for ${r2Key}:`, err.message);
   }
 }
 
@@ -146,4 +174,8 @@ function getContentType(filename) {
   return "application/octet-stream";
 }
 
-sync();
+sync().catch(err => {
+  console.error("\n--- Sync Failed ---");
+  console.error(err);
+  process.exit(1);
+});
