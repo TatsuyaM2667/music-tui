@@ -1,6 +1,13 @@
 # music-tui
 
+[![Rust](https://img.shields.io/badge/language-Rust-orange.svg)](https://www.rust-lang.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Platform](https://img.shields.io/badge/platform-Linux-lightgrey.svg)](https://www.kernel.org/)
+[![Arch Linux](https://img.shields.io/badge/Developed%20on-Arch%20Linux-blue.svg)](https://archlinux.org/)
+
 `music-tui` は、Rustで書かれたターミナルベースの音楽プレイヤーです。ストリーミング再生、歌詞表示、お気に入り機能、動画連携などの機能を備えています。
+
+> **Note**: 本プロジェクトは **Arch Linux** 環境で開発・テストされています。
 
 ## 特徴
 
@@ -59,3 +66,7 @@ cargo run --release
 ## ライセンス
 
 [MIT License](LICENSE)
+
+---
+
+`#Rust` `#TUI` `#MusicPlayer` `#ArchLinux` `#Terminal` `#Ratatui` `#OpenSource`
