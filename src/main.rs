@@ -6,8 +6,8 @@ mod ui;
 use api::*;
 use state::*;
 
-use std::io::stdout;
-use std::time::Duration;
+use std::io::{stdout, Write};
+use std::time::{Duration, Instant};
 use std::sync::atomic::Ordering;
 
 use anyhow::Result;
@@ -33,7 +33,6 @@ fn restore_terminal() {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // .env ファイルを読み込む
     let _ = dotenvy::dotenv();
 
     let original_hook = std::panic::take_hook();
@@ -63,11 +62,16 @@ async fn main() -> Result<()> {
     let (tx_player_status, mut rx_player_status) = tokio::sync::mpsc::channel::<String>(10);
     let (tx_album_art, mut rx_album_art) = tokio::sync::mpsc::channel::<Vec<u8>>(10);
 
-    let mut last_tick = std::time::Instant::now();
-    let mut last_key: Option<(KeyCode, std::time::Instant)> = None;
+    let mut last_tick = Instant::now();
+    let mut last_key: Option<(KeyCode, Instant)> = None;
     
     loop {
         terminal.draw(|f| ui::draw_ui(f, &mut state))?;
+
+        // 5秒間操作がなければ歌詞のスクロールをリセット
+        if state.lyric_scroll_offset != 0 && state.last_lyric_interaction.elapsed() > Duration::from_secs(5) {
+            state.lyric_scroll_offset = 0;
+        }
 
         // Handle Media Control Events (OS) via Channel
         while let Ok(event) = state.rx_media_events.try_recv() {
@@ -104,13 +108,21 @@ async fn main() -> Result<()> {
         while let Ok(msg) = rx_player_status.try_recv() {
             if msg == "Playing" {
                 state.is_actually_playing = true;
-                let title = state.tracks.iter().find(|t| Some(&t.path) == state.playing_id.as_ref())
-                    .map(|t| t.title.clone()).unwrap_or_default();
+                let (title, artist, album) = state.tracks.iter().find(|t| Some(&t.path) == state.playing_id.as_ref())
+                    .map(|t| (t.title.clone(), t.artist.clone(), t.album.clone())).unwrap_or_default();
                 state.status_msg = format!("Playing: {}", title);
                 if state.parsed_lyrics.is_empty() { state.current_lyric = "● Playing...".into(); }
                 
                 // Update system media status
                 if let Some(controls) = &mut state.media_controls {
+                    let art_url = state.art_temp_path.as_ref().map(|p| format!("file://{}", p));
+                    let _ = controls.set_metadata(MediaMetadata {
+                        title: Some(&title),
+                        artist: Some(&artist),
+                        album: Some(&album),
+                        cover_url: art_url.as_deref(),
+                        ..Default::default()
+                    });
                     let _ = controls.set_playback(MediaPlayback::Playing { progress: None });
                 }
             } else if msg.contains("Error") {
@@ -126,6 +138,14 @@ async fn main() -> Result<()> {
         while let Ok(art_data) = rx_album_art.try_recv() {
             if let Ok(img) = image::load_from_memory(&art_data) {
                 state.album_art = Some(img);
+                
+                // システム通知用に一時ファイルに保存
+                let temp_dir = std::env::temp_dir();
+                let temp_path = temp_dir.join("music_tui_art.png");
+                if let Ok(mut file) = std::fs::File::create(&temp_path) {
+                    let _ = file.write_all(&art_data);
+                    state.art_temp_path = Some(temp_path.to_string_lossy().to_string());
+                }
             }
         }
 
@@ -153,7 +173,7 @@ async fn main() -> Result<()> {
             let ev = event::read()?;
             match ev {
                 Event::Key(key) => {
-                    let now = std::time::Instant::now();
+                    let now = Instant::now();
                     match state.input_mode {
                         InputMode::Normal => match key.code {
                             KeyCode::Char('v') => {
@@ -250,57 +270,78 @@ async fn main() -> Result<()> {
                     }
                 }
                 Event::Mouse(mouse) => {
-                    if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
-                        let col = mouse.column;
-                        let row = mouse.row;
+                    let col = mouse.column;
+                    let row = mouse.row;
 
-                        // Check Buttons
-                        if let Some(area) = state.prev_button_area {
-                            if col >= area.x && col < area.x + area.width && row == area.y {
-                                if state.current > 0 { state.current -= 1; state.list_state.select(Some(state.current)); state.last_action = "⏮".into(); play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone()); }
+                    match mouse.kind {
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            // Check Buttons
+                            if let Some(area) = state.prev_button_area {
+                                if col >= area.x && col < area.x + area.width && row == area.y {
+                                    if state.current > 0 { state.current -= 1; state.list_state.select(Some(state.current)); state.last_action = "⏮".into(); play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone()); }
+                                }
                             }
-                        }
-                        if let Some(area) = state.play_button_area {
-                            if col >= area.x && col < area.x + area.width && row == area.y {
-                                if state.playing_id.is_some() {
-                                    state.is_paused = player::toggle_pause();
-                                    state.last_action = if state.is_paused { "⏸".into() } else { "▶".into() };
-                                    if let Some(controls) = &mut state.media_controls {
-                                        let _ = controls.set_playback(if state.is_paused { MediaPlayback::Paused { progress: None } } else { MediaPlayback::Playing { progress: None } });
+                            if let Some(area) = state.play_button_area {
+                                if col >= area.x && col < area.x + area.width && row == area.y {
+                                    if state.playing_id.is_some() {
+                                        state.is_paused = player::toggle_pause();
+                                        state.last_action = if state.is_paused { "⏸".into() } else { "▶".into() };
+                                        if let Some(controls) = &mut state.media_controls {
+                                            let _ = controls.set_playback(if state.is_paused { MediaPlayback::Paused { progress: None } } else { MediaPlayback::Playing { progress: None } });
+                                        }
+                                    } else {
+                                        state.last_action = "▶".into();
+                                        play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone());
                                     }
-                                } else {
-                                    state.last_action = "▶".into();
-                                    play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone());
                                 }
                             }
-                        }
-                        if let Some(area) = state.next_button_area {
-                            if col >= area.x && col < area.x + area.width && row == area.y {
-                                if state.current < state.filtered_indices.len().saturating_sub(1) { state.current += 1; state.list_state.select(Some(state.current)); state.last_action = "⏭".into(); play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone()); }
+                            if let Some(area) = state.next_button_area {
+                                if col >= area.x && col < area.x + area.width && row == area.y {
+                                    if state.current < state.filtered_indices.len().saturating_sub(1) { state.current += 1; state.list_state.select(Some(state.current)); state.last_action = "⏭".into(); play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone()); }
+                                }
                             }
-                        }
 
-                        // Check Lyrics
-                        if let Some(area) = state.lyric_area {
-                            if col >= area.x && col < area.x + area.width &&
-                               row >= area.y && row < area.y + area.height {
-                                
-                                let relative_row = row as i32 - area.y as i32;
-                                let center_line = area.height as i32 / 2;
-                                let line_offset = relative_row - center_line;
-                                
-                                let pos = state.playback_pos;
-                                let mut current_idx = 0;
-                                for (i, (time, _)) in state.parsed_lyrics.iter().enumerate() {
-                                    if pos >= *time { current_idx = i; } else { break; }
+                            // Check Lyrics
+                            if let Some(area) = state.lyric_area {
+                                if col >= area.x && col < area.x + area.width &&
+                                   row >= area.y && row < area.y + area.height {
+                                    
+                                    let relative_row = row as i32 - area.y as i32;
+                                    let center_line = area.height as i32 / 2;
+                                    // スクロールオフセットを考慮
+                                    let line_offset = relative_row - center_line + state.lyric_scroll_offset;
+                                    
+                                    let pos = state.playback_pos;
+                                    let mut current_idx = 0;
+                                    for (i, (time, _)) in state.parsed_lyrics.iter().enumerate() {
+                                        if pos >= *time { current_idx = i; } else { break; }
+                                    }
+                                    
+                                    let target_idx = (current_idx as i32 + line_offset).clamp(0, state.parsed_lyrics.len() as i32 - 1) as usize;
+                                    let (target_time, _) = state.parsed_lyrics[target_idx];
+                                    player::seek_to(target_time);
+                                    state.last_action = format!("Seek: {:.0}s", target_time);
+                                    state.lyric_scroll_offset = 0; // シークしたらリセット
                                 }
-                                
-                                let target_idx = (current_idx as i32 + line_offset).clamp(0, state.parsed_lyrics.len() as i32 - 1) as usize;
-                                let (target_time, _) = state.parsed_lyrics[target_idx];
-                                player::seek_to(target_time);
-                                state.last_action = format!("Seek: {:.0}s", target_time);
                             }
                         }
+                        MouseEventKind::ScrollUp => {
+                            if let Some(area) = state.lyric_area {
+                                if col >= area.x && col < area.x + area.width && row >= area.y && row < area.y + area.height {
+                                    state.lyric_scroll_offset -= 1;
+                                    state.last_lyric_interaction = Instant::now();
+                                }
+                            }
+                        }
+                        MouseEventKind::ScrollDown => {
+                            if let Some(area) = state.lyric_area {
+                                if col >= area.x && col < area.x + area.width && row >= area.y && row < area.y + area.height {
+                                    state.lyric_scroll_offset += 1;
+                                    state.last_lyric_interaction = Instant::now();
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 _ => {}
@@ -328,7 +369,7 @@ async fn main() -> Result<()> {
             }
         }
 
-        if last_tick.elapsed() >= Duration::from_millis(100) { state.tick_count += 1; last_tick = std::time::Instant::now(); }
+        if last_tick.elapsed() >= Duration::from_millis(100) { state.tick_count += 1; last_tick = Instant::now(); }
     }
     restore_terminal();
     Ok(())
@@ -353,6 +394,8 @@ fn play_selected_track(
     state.is_paused = false;
     state.is_actually_playing = false;
     state.album_art = None;
+    state.art_temp_path = None;
+    state.lyric_scroll_offset = 0;
 
     // Update system metadata
     if let Some(controls) = &mut state.media_controls {

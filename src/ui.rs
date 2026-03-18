@@ -8,48 +8,80 @@ use crate::state::{AppState, InputMode};
 pub fn draw_ui(frame: &mut Frame, state: &mut AppState) {
     let size = frame.area();
 
-    // 1. Help Footer (最下部)
-    // 2. Playlist & Search (下部)
-    // 3. Player Area (上部 - 残り全部)
+    // 縦長（画面分割など）の場合の判定
+    let is_vertical = size.width < 80;
+
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(0),      // Player
-            Constraint::Length(8),   // Playlist & Search (少し高さを抑える)
+            Constraint::Length(if is_vertical { 6 } else { 8 }), // Playlist
             Constraint::Length(1),   // Help Footer
         ])
         .split(size);
 
-    render_player_area(frame, state, main_chunks[0]);
+    render_player_area(frame, state, main_chunks[0], is_vertical);
     render_playlist_and_search(frame, state, main_chunks[1]);
     render_help(frame, state, main_chunks[2]);
 }
 
-fn render_player_area(frame: &mut Frame, state: &mut AppState, area: Rect) {
+fn render_player_area(frame: &mut Frame, state: &mut AppState, area: Rect, is_vertical: bool) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(0),     // Art/Info & Lyrics
-            Constraint::Length(3),  // Controls (Gauge & Buttons)
+            Constraint::Length(3),  // Controls
         ])
         .split(area);
 
-    let top_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(35), // Album Art & Info
-            Constraint::Percentage(65), // Lyrics
-        ])
-        .split(chunks[0]);
+    if is_vertical {
+        // 縦長レイアウト: 上から順に並べる
+        let vertical_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Ratio(1, 2), // Art & Info
+                Constraint::Ratio(1, 2), // Lyrics
+            ])
+            .split(chunks[0]);
+        
+        render_art_and_info(frame, state, vertical_chunks[0]);
+        
+        let lyric_block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Rgb(60, 60, 60))).title(" Lyrics ");
+        frame.render_widget(lyric_block, vertical_chunks[1]);
+        let lyric_inner = vertical_chunks[1].inner(Margin { horizontal: 1, vertical: 1 });
+        state.lyric_area = Some(lyric_inner);
+        render_lyrics(frame, state, lyric_inner);
 
-    // --- Left Column: Art & Info ---
+    } else {
+        // 横長レイアウト: 左右に並べる
+        let top_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(35), // Album Art & Info
+                Constraint::Percentage(65), // Lyrics
+            ])
+            .split(chunks[0]);
+
+        render_art_and_info(frame, state, top_chunks[0]);
+
+        let lyric_block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Rgb(60, 60, 60))).title(" Lyrics ");
+        frame.render_widget(lyric_block, top_chunks[1]);
+        let lyric_inner = top_chunks[1].inner(Margin { horizontal: 1, vertical: 1 });
+        state.lyric_area = Some(lyric_inner);
+        render_lyrics(frame, state, lyric_inner);
+    }
+
+    render_controls(frame, state, chunks[1]);
+}
+
+fn render_art_and_info(frame: &mut Frame, state: &AppState, area: Rect) {
     let left_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(0),     // Album Art
-            Constraint::Length(6),  // Track Info (Title, Artist, Album)
+            Constraint::Length(4),  // Track Info (少し短く)
         ])
-        .split(top_chunks[0]);
+        .split(area);
 
     // Album Art
     let art_block = Block::default()
@@ -69,12 +101,12 @@ fn render_player_area(frame: &mut Frame, state: &mut AppState, area: Rect) {
         }
     } else {
         frame.render_widget(
-            Paragraph::new("\n\n\n\n 🎵\n No Art").alignment(Alignment::Center).style(Style::default().fg(Color::DarkGray)),
+            Paragraph::new("\n\n 🎵\n No Art").alignment(Alignment::Center).style(Style::default().fg(Color::DarkGray)),
             art_inner
         );
     }
 
-    // Track Info (Artの下)
+    // Track Info (Artの直下)
     let info_block = Block::default()
         .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
         .border_style(Style::default().fg(Color::Rgb(60, 60, 60)));
@@ -86,15 +118,11 @@ fn render_player_area(frame: &mut Frame, state: &mut AppState, area: Rect) {
     if let Some(t) = playing_track {
         let info_text = vec![
             Line::from(vec![
-                Span::styled("Title: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(&t.title, Style::default().add_modifier(Modifier::BOLD).fg(Color::White)),
             ]),
             Line::from(vec![
-                Span::styled("Artist: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(&t.artist, Style::default().fg(Color::Cyan)),
-            ]),
-            Line::from(vec![
-                Span::styled("Album: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(" - ", Style::default().fg(Color::DarkGray)),
                 Span::styled(&t.album, Style::default().fg(Color::Gray)),
             ]),
         ];
@@ -102,28 +130,12 @@ fn render_player_area(frame: &mut Frame, state: &mut AppState, area: Rect) {
             Paragraph::new(info_text)
                 .block(info_block.clone())
                 .wrap(Wrap { trim: true })
-                .alignment(Alignment::Left),
-            left_chunks[1].inner(Margin { horizontal: 1, vertical: 1 })
+                .alignment(Alignment::Center),
+            left_chunks[1]
         );
-        // ブロック自体を描画
-        frame.render_widget(info_block, left_chunks[1]);
     } else {
         frame.render_widget(info_block, left_chunks[1]);
     }
-
-    // --- Lyrics ---
-    let lyric_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Rgb(60, 60, 60)))
-        .title(" Lyrics ");
-    frame.render_widget(lyric_block, top_chunks[1]);
-    
-    let lyric_inner = top_chunks[1].inner(Margin { horizontal: 1, vertical: 1 });
-    state.lyric_area = Some(lyric_inner);
-    render_lyrics(frame, state, lyric_inner);
-
-    // --- Controls ---
-    render_controls(frame, state, chunks[1]);
 }
 
 fn render_controls(frame: &mut Frame, state: &mut AppState, area: Rect) {
@@ -141,7 +153,6 @@ fn render_controls(frame: &mut Frame, state: &mut AppState, area: Rect) {
     });
 
     if let Some(t) = playing_track {
-        // Progress Gauge
         let pos = state.playback_pos;
         let duration = t.duration.max(1.0);
         let percent = ((pos / duration) * 100.0).min(100.0) as u16;
@@ -152,10 +163,8 @@ fn render_controls(frame: &mut Frame, state: &mut AppState, area: Rect) {
             .label(Span::styled(progress_label, Style::default().fg(Color::White)));
         frame.render_widget(gauge, chunks[0]);
 
-        // Buttons
         let btn_area = chunks[1];
         let center_x = btn_area.x + btn_area.width / 2;
-        
         let prev_btn = " [⏮ Prev] ";
         let play_btn = if state.is_paused { " [▶ Play] " } else { " [⏸ Pause] " };
         let next_btn = " [⏭ Next] ";
@@ -189,8 +198,15 @@ fn render_lyrics(frame: &mut Frame, state: &AppState, area: Rect) {
     let h = area.height as i32;
     let center_line = h / 2;
     
+    // スクロールインジケーター
+    if state.lyric_scroll_offset != 0 {
+        let indicator = format!(" 📜 Scrolling ({:+} lines) ", -state.lyric_scroll_offset);
+        frame.render_widget(Paragraph::new(indicator).style(Style::default().fg(Color::Yellow)).alignment(Alignment::Right), area);
+    }
+
     for (i, (_time, text)) in state.parsed_lyrics.iter().enumerate() {
-        let relative_idx = i as i32 - current_idx as i32;
+        // スクロールオフセットを適用
+        let relative_idx = i as i32 - current_idx as i32 + state.lyric_scroll_offset;
         let y = center_line + relative_idx;
 
         if y >= 0 && y < h {
@@ -221,29 +237,24 @@ fn render_playlist_and_search(frame: &mut Frame, state: &AppState, area: Rect) {
         ])
         .split(area);
 
-    // Playlist
     let list_items: Vec<ListItem> = state.filtered_indices.iter().enumerate().map(|(i, &idx)| {
         let track = &state.tracks[idx];
         let is_selected = i == state.current;
         let is_playing = state.playing_id.as_ref().map_or(false, |id| id == &track.path);
-        
         let mut style = Style::default();
         if is_selected { style = style.bg(Color::Rgb(40, 40, 80)).fg(Color::White); }
         if is_playing { style = style.fg(Color::Cyan); }
-        
         let prefix = if is_playing { "▶ " } else { "  " };
         ListItem::new(format!("{}{} - {}", prefix, track.title, track.artist)).style(style)
     }).collect();
 
-    let list_title = if state.show_favorites_only { " ⭐ Favorites " } else { " ☰ Tracks " };
     let mut list_state = state.list_state.clone();
     frame.render_stateful_widget(
-        List::new(list_items).block(Block::default().borders(Borders::ALL).title(list_title).border_style(Style::default().fg(Color::Rgb(50, 50, 50)))),
+        List::new(list_items).block(Block::default().borders(Borders::ALL).title(" Playlist ").border_style(Style::default().fg(Color::Rgb(50, 50, 50)))),
         chunks[0],
         &mut list_state
     );
 
-    // Search
     let search_label = if matches!(state.input_mode, InputMode::Editing) { " Searching... " } else { " Search [/] " };
     let search_style = if matches!(state.input_mode, InputMode::Editing) { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::DarkGray) };
     frame.render_widget(
@@ -255,9 +266,8 @@ fn render_playlist_and_search(frame: &mut Frame, state: &AppState, area: Rect) {
 }
 
 fn render_help(frame: &mut Frame, state: &AppState, area: Rect) {
-    let help_text = " q:Quit | /:Search | f:Fav | Shift+F:Toggle View | Space:Play/Pause | ←/→:Prev/Next ";
+    let help_text = " q:Quit | /:Search | f:Fav | Shift+F:Toggle View | Space:Play/Pause | Wheel:Scroll Lyrics ";
     let action_text = format!(" [{}] ", state.last_action);
-    
     let help_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -265,7 +275,6 @@ fn render_help(frame: &mut Frame, state: &AppState, area: Rect) {
             Constraint::Length(action_text.len() as u16),
         ])
         .split(area);
-
     frame.render_widget(Paragraph::new(help_text).style(Style::default().fg(Color::Rgb(80, 80, 80))), help_chunks[0]);
     frame.render_widget(Paragraph::new(action_text).style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)), help_chunks[1]);
 }
