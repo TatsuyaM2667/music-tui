@@ -177,6 +177,14 @@ pub fn seek_relative(secs: f64) {
     }
 }
 
+pub fn seek_to(secs: f64) {
+    if let Ok(lock) = GLOBAL_SINK.lock() {
+        if let Some(sink) = lock.as_ref() {
+            let _ = sink.try_seek(std::time::Duration::from_secs_f64(secs.max(0.0)));
+        }
+    }
+}
+
 pub fn set_volume(vol: f32) {
     if let Ok(mut lock) = VOLUME.lock() {
         *lock = vol.clamp(0.0, 1.0);
