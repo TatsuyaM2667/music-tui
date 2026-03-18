@@ -2,6 +2,8 @@ use crate::api::TrackInfo;
 use ratatui::widgets::ListState;
 use std::collections::HashSet;
 use std::fs;
+use image::DynamicImage;
+use ratatui_image::picker::Picker;
 
 pub enum InputMode {
     Normal,
@@ -32,24 +34,22 @@ pub struct AppState {
     pub is_actually_playing: bool,
     pub favorites: HashSet<String>,
     pub show_favorites_only: bool,
+    pub volume: f32,
+    pub album_art: Option<DynamicImage>,
+    pub picker: Option<Picker>,
 }
 
 impl AppState {
-    pub fn new(mut tracks: Vec<TrackInfo>) -> Self {
+    pub fn new(tracks: Vec<TrackInfo>) -> Self {
         // お気に入りをファイルから読み込む
         let favorites = Self::load_favorites().unwrap_or_default();
-
-        // ソート順: アーティスト -> アルバム -> トラック番号 -> 曲名
-        tracks.sort_by(|a, b| {
-            a.artist.to_lowercase().cmp(&b.artist.to_lowercase())
-                .then(a.album.to_lowercase().cmp(&b.album.to_lowercase()))
-                .then(a.track_number.unwrap_or(0).cmp(&b.track_number.unwrap_or(0)))
-                .then(a.title.to_lowercase().cmp(&b.title.to_lowercase()))
-        });
 
         let filtered_indices = (0..tracks.len()).collect();
         let mut list_state = ListState::default();
         list_state.select(Some(0));
+        
+        // Pickerの初期化を試みる
+        let picker = Picker::from_query_stdio().ok();
 
         Self {
             tracks,
@@ -73,6 +73,9 @@ impl AppState {
             is_actually_playing: false,
             favorites,
             show_favorites_only: false,
+            volume: 1.0,
+            album_art: None,
+            picker,
         }
     }
 
@@ -140,7 +143,36 @@ impl AppState {
         self.update_search();
     }
 
-    pub fn id_from_path(path: &str) -> String {
-        path.trim_start_matches('/').replace(".mp3", "")
+    pub fn adjust_volume(&mut self, delta: f32) {
+        self.volume = (self.volume + delta).clamp(0.0, 1.0);
+        crate::player::set_volume(self.volume);
+    }
+
+    pub fn move_track(&mut self, up: bool) {
+        if self.filtered_indices.len() < 2 { return; }
+        if self.current >= self.filtered_indices.len() { return; }
+
+        let target_idx = if up {
+            if self.current == 0 { return; }
+            self.current - 1
+        } else {
+            if self.current >= self.filtered_indices.len() - 1 { return; }
+            self.current + 1
+        };
+
+        // tracks における実際のインデックスを取得
+        let actual_idx = self.filtered_indices[self.current];
+        let actual_target_idx = self.filtered_indices[target_idx];
+
+        // tracks 内で入れ替え
+        self.tracks.swap(actual_idx, actual_target_idx);
+        
+        // filtered_indices を更新（単に入れ替える）
+        self.filtered_indices[self.current] = actual_target_idx;
+        self.filtered_indices[target_idx] = actual_idx;
+
+        self.current = target_idx;
+        self.list_state.select(Some(self.current));
+        self.last_action = format!("Moved {}", if up { "Up" } else { "Down" });
     }
 }

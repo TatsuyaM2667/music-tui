@@ -59,6 +59,7 @@ async fn main() -> Result<()> {
 
     let (tx_lyrics, mut rx_lyrics) = tokio::sync::mpsc::channel::<(String, Result<String>)>(10);
     let (tx_player_status, mut rx_player_status) = tokio::sync::mpsc::channel::<String>(10);
+    let (tx_album_art, mut rx_album_art) = tokio::sync::mpsc::channel::<Vec<u8>>(10);
 
     let mut last_tick = std::time::Instant::now();
     let mut last_key: Option<(KeyCode, std::time::Instant)> = None;
@@ -83,16 +84,16 @@ async fn main() -> Result<()> {
             }
         }
 
+        while let Ok(art_data) = rx_album_art.try_recv() {
+            if let Ok(img) = image::load_from_memory(&art_data) {
+                state.album_art = Some(img);
+            }
+        }
+
         while let Ok(p) = rx_progress.try_recv() { state.load_progress = p; }
         while let Ok(track) = rx_track.try_recv() {
             state.tracks.push(track);
-            // 届くたびにソート: アーティスト -> アルバム -> トラック番号 -> 曲名
-            state.tracks.sort_by(|a, b| {
-                a.artist.to_lowercase().cmp(&b.artist.to_lowercase())
-                    .then(a.album.to_lowercase().cmp(&b.album.to_lowercase()))
-                    .then(a.track_number.unwrap_or(0).cmp(&b.track_number.unwrap_or(0)))
-                    .then(a.title.to_lowercase().cmp(&b.title.to_lowercase()))
-            });
+            // サーバーからの順序を尊重
             state.update_search();
             if state.tracks.len() == 1 { state.list_state.select(Some(0)); }
             state.is_loading = state.load_progress < 99.9;
@@ -146,18 +147,46 @@ async fn main() -> Result<()> {
                         }
                         KeyCode::Char('q') => break,
                         KeyCode::Char('/') => state.input_mode = InputMode::Editing,
-                        KeyCode::Up => { if state.current > 0 { state.current -= 1; state.list_state.select(Some(state.current)); } }
-                        KeyCode::Down => { if state.current < state.filtered_indices.len().saturating_sub(1) { state.current += 1; state.list_state.select(Some(state.current)); } }
+                        KeyCode::Char('+') | KeyCode::Char('=') => {
+                            state.adjust_volume(0.05);
+                            state.last_action = format!("Vol: {:.0}%", state.volume * 100.0);
+                        }
+                        KeyCode::Char('-') | KeyCode::Char('_') => {
+                            state.adjust_volume(-0.05);
+                            state.last_action = format!("Vol: {:.0}%", state.volume * 100.0);
+                        }
+                        KeyCode::Up => {
+                            if key.modifiers.contains(event::KeyModifiers::ALT) {
+                                state.move_track(true);
+                                let tracks_copy = state.tracks.clone();
+                                tokio::spawn(async move {
+                                    let _ = update_track_order(&tracks_copy).await;
+                                });
+                            } else {
+                                if state.current > 0 { state.current -= 1; state.list_state.select(Some(state.current)); }
+                            }
+                        }
+                        KeyCode::Down => {
+                            if key.modifiers.contains(event::KeyModifiers::ALT) {
+                                state.move_track(false);
+                                let tracks_copy = state.tracks.clone();
+                                tokio::spawn(async move {
+                                    let _ = update_track_order(&tracks_copy).await;
+                                });
+                            } else {
+                                if state.current < state.filtered_indices.len().saturating_sub(1) { state.current += 1; state.list_state.select(Some(state.current)); }
+                            }
+                        }
                         KeyCode::Left => {
                             let is_repeat = last_key.map_or(false, |(c, t)| c == KeyCode::Left && now.duration_since(t) < Duration::from_millis(200));
                             if is_repeat { player::seek_relative(-5.0); state.last_action = "⏪".into(); }
-                            else if state.current > 0 { state.current -= 1; state.list_state.select(Some(state.current)); state.last_action = "⏮".into(); play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone()); }
+                            else if state.current > 0 { state.current -= 1; state.list_state.select(Some(state.current)); state.last_action = "⏮".into(); play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone()); }
                             last_key = Some((KeyCode::Left, now));
                         }
                         KeyCode::Right => {
                             let is_repeat = last_key.map_or(false, |(c, t)| c == KeyCode::Right && now.duration_since(t) < Duration::from_millis(200));
                             if is_repeat { player::seek_relative(5.0); state.last_action = "⏩".into(); }
-                            else if state.current < state.filtered_indices.len().saturating_sub(1) { state.current += 1; state.list_state.select(Some(state.current)); state.last_action = "⏭".into(); play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone()); }
+                            else if state.current < state.filtered_indices.len().saturating_sub(1) { state.current += 1; state.list_state.select(Some(state.current)); state.last_action = "⏭".into(); play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone()); }
                             last_key = Some((KeyCode::Right, now));
                         }
                         KeyCode::Enter | KeyCode::Char(' ') => {
@@ -166,7 +195,7 @@ async fn main() -> Result<()> {
                                 state.last_action = if state.is_paused { "⏸".into() } else { "▶".into() };
                             } else {
                                 state.last_action = "▶".into();
-                                play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone());
+                                play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone());
                             }
                         }
                         _ => {}
@@ -196,7 +225,7 @@ async fn main() -> Result<()> {
                         state.current = idx_in_filtered + 1;
                         state.list_state.select(Some(state.current));
                         state.last_action = "⏭".into();
-                        play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone());
+                        play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone());
                     }
                 }
             }
@@ -208,7 +237,12 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn play_selected_track(state: &mut AppState, tx_lyrics: tokio::sync::mpsc::Sender<(String, Result<String>)>, tx_status: tokio::sync::mpsc::Sender<String>) {
+fn play_selected_track(
+    state: &mut AppState, 
+    tx_lyrics: tokio::sync::mpsc::Sender<(String, Result<String>)>, 
+    tx_status: tokio::sync::mpsc::Sender<String>,
+    tx_art: tokio::sync::mpsc::Sender<Vec<u8>>
+) {
     let (path, lrc_path, _title) = if let Some(t) = state.current_track() {
         (t.path.clone(), t.lrc.clone(), t.title.clone())
     } else { return };
@@ -221,9 +255,10 @@ fn play_selected_track(state: &mut AppState, tx_lyrics: tokio::sync::mpsc::Sende
     state.parsed_lyrics.clear();
     state.is_paused = false;
     state.is_actually_playing = false;
+    state.album_art = None; // Reset album art
 
     let url = stream_url_from_path(&path);
-    let _ = player::play_from_url_streaming(url, tx_status);
+    let _ = player::play_from_url_streaming(url, tx_status, tx_art);
 
     if let Some(lp) = lrc_path {
         let tx = tx_lyrics.clone();

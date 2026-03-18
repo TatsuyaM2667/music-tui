@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use anyhow::Result;
 use futures_util::StreamExt;
 use std::sync::Arc;
@@ -7,7 +7,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio_util::io::StreamReader;
 use once_cell::sync::Lazy;
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct TrackInfo {
     pub path: String,
     pub lrc: Option<String>,
@@ -76,4 +76,17 @@ pub fn lyrics_url_from_path(path: &str) -> String {
 pub async fn fetch_lyrics_from_url(url: &str) -> Result<String> {
     let res = reqwest::get(url).await?;
     Ok(res.text().await?)
+}
+
+pub async fn update_track_order(tracks: &[TrackInfo]) -> Result<()> {
+    let url = format!("{}/reorder", *BASE_URL);
+    let client = reqwest::Client::new();
+    let res = client.post(url)
+        .json(tracks)
+        .send()
+        .await?;
+    if !res.status().is_success() {
+        return Err(anyhow::anyhow!("Failed to update order: {}", res.status()));
+    }
+    Ok(())
 }

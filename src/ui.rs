@@ -2,18 +2,19 @@ use ratatui::{
     prelude::*,
     widgets::{Paragraph, Block, Borders, Wrap, List, ListItem, Gauge},
 };
+use ratatui_image::{Image, Resize};
 use crate::state::{AppState, InputMode};
 
 pub fn draw_ui(frame: &mut Frame, state: &AppState) {
-    let size = frame.size();
+    let size = frame.area();
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Length(5), // 1. Now Playing (高さを微調整)
-            Constraint::Length(4), // 2. Lyrics (高さを微調整)
-            Constraint::Min(10),   // 3. Track List (メイン)
+            Constraint::Length(7), // 1. Now Playing (高さを増やしてアートに対応)
+            Constraint::Length(4), // 2. Lyrics
+            Constraint::Min(10),   // 3. Track List
             Constraint::Length(3), // 4. Search Bar
             Constraint::Length(1), // 5. Help Footer
         ])
@@ -24,6 +25,30 @@ pub fn draw_ui(frame: &mut Frame, state: &AppState) {
         state.tracks.iter().find(|t| &t.path == path)
     });
 
+    let now_playing_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(10), // Album Art
+            Constraint::Min(0),     // Track Info
+        ])
+        .split(chunks[0]);
+
+    // Render Album Art
+    if let Some(img) = &state.album_art {
+        if let Some(picker) = &state.picker {
+            let image_area = now_playing_chunks[0].inner(Margin { horizontal: 1, vertical: 0 });
+            // プロトコルを作成してウィジェットをレンダリング
+            // ratatui-image 10.x では Picker からプロトコルを作成する
+            let dyn_img = img.clone();
+            if let Ok(protocol) = picker.new_protocol(dyn_img, image_area, Resize::Fit(None)) {
+                let image_widget = Image::new(&protocol);
+                frame.render_widget(image_widget, image_area);
+            }
+        }
+    } else {
+        frame.render_widget(Paragraph::new("\n 🎵").alignment(Alignment::Center), now_playing_chunks[0]);
+    }
+
     let panel_inner = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -33,7 +58,7 @@ pub fn draw_ui(frame: &mut Frame, state: &AppState) {
             Constraint::Length(1), // Controls
             Constraint::Min(0),
         ])
-        .split(chunks[0]);
+        .split(now_playing_chunks[1]);
 
     if let Some(t) = playing_track {
         let video_icon = if t.video.is_some() { " 🎬" } else { "" };
@@ -60,10 +85,12 @@ pub fn draw_ui(frame: &mut Frame, state: &AppState) {
                 Style::default().fg(if state.is_paused { Color::Yellow } else { Color::Green }).add_modifier(Modifier::BOLD)),
             Span::raw("  "),
             Span::styled(" [Next: →] ", Style::default().fg(Color::White)),
+            Span::raw("  "),
+            Span::styled(format!(" [Vol: {:.0}% (-/+)] ", state.volume * 100.0), Style::default().fg(Color::Magenta)),
         ]);
         frame.render_widget(Paragraph::new(controls).alignment(Alignment::Center), panel_inner[3]);
     } else {
-        frame.render_widget(Paragraph::new("\n(Stopped - Press Enter to Play)").alignment(Alignment::Center).style(Style::default().fg(Color::DarkGray)), chunks[0]);
+        frame.render_widget(Paragraph::new("\n(Stopped - Press Enter to Play)").alignment(Alignment::Center).style(Style::default().fg(Color::DarkGray)), now_playing_chunks[1]);
     }
 
     // 2. Lyrics
@@ -126,9 +153,9 @@ pub fn draw_ui(frame: &mut Frame, state: &AppState) {
 
     // 5. Help Footer
     let help_text = if state.show_favorites_only {
-        "Quit: q | Search: / | Fav: f | View All: Shift+F | Video: v | Select: Up/Down | Seek: L/R | Play: Enter/Space"
+        "Quit: q | Search: / | Fav: f | View All: Shift+F | Video: v | Vol: -/+ | Reorder: Alt+↑/↓ | Select: ↑/↓ | Play: Enter"
     } else {
-        "Quit: q | Search: / | Fav: f | View Favorites: Shift+F | Video: v | Select: Up/Down | Seek: L/R | Play: Enter/Space"
+        "Quit: q | Search: / | Fav: f | View Favorites: Shift+F | Video: v | Vol: -/+ | Reorder: Alt+↑/↓ | Select: ↑/↓ | Play: Enter"
     };
     frame.render_widget(
         Paragraph::new(help_text).style(Style::default().fg(Color::DarkGray)),

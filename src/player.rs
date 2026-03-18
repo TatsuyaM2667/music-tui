@@ -11,6 +11,7 @@ static AUDIO_HANDLE: Lazy<OutputStreamHandle> = Lazy::new(|| {
 });
 
 static GLOBAL_SINK: Lazy<Mutex<Option<Arc<Sink>>>> = Lazy::new(|| Mutex::new(None));
+static VOLUME: Lazy<Mutex<f32>> = Lazy::new(|| Mutex::new(1.0));
 
 // 再生ズレを完全に解消するためのストリーミングラッパー
 // 読んだデータをすべて Vec に貯めることで、デコーダの「先頭に戻る」要求に完璧に応える
@@ -59,9 +60,19 @@ impl<R: Read> Seek for StreamingBuffer<R> {
     }
 }
 
-pub fn play_from_url_streaming(url: String, tx_err: tokio::sync::mpsc::Sender<String>) -> Result<()> {
+pub fn play_from_url_streaming(
+    url: String, 
+    tx_err: tokio::sync::mpsc::Sender<String>,
+    tx_art: tokio::sync::mpsc::Sender<Vec<u8>>
+) -> Result<()> {
     stop();
     let sink = Arc::new(Sink::try_new(&AUDIO_HANDLE).map_err(|e| anyhow!(e))?);
+    
+    // Apply current volume
+    if let Ok(vol) = VOLUME.lock() {
+        sink.set_volume(*vol);
+    }
+
     if let Ok(mut lock) = GLOBAL_SINK.lock() { *lock = Some(sink.clone()); }
 
     let sink_thread = sink.clone();
@@ -82,8 +93,26 @@ pub fn play_from_url_streaming(url: String, tx_err: tokio::sync::mpsc::Sender<St
         }
 
         let _ = tx_err.blocking_send("Decoding...".into());
-        let stream = StreamingBuffer { inner: response, data: Vec::with_capacity(512 * 1024), pos: 0 };
+        let mut stream = StreamingBuffer { inner: response, data: Vec::with_capacity(512 * 1024), pos: 0 };
         
+        // Try to read ID3 tags for album art
+        let mut header = vec![0u8; 10];
+        if let Ok(_) = stream.read_exact(&mut header) {
+            let _ = stream.seek(SeekFrom::Start(0));
+            if &header[0..3] == b"ID3" {
+                // ID3 tag found, try to read it
+                // We need enough data to read the whole tag. 
+                // For simplicity, let's try to read it from what we have or wait a bit.
+                // id3 crate Tag::read_from2 works with Seek + Read.
+                if let Ok(tag) = id3::Tag::read_from2(&mut stream) {
+                    if let Some(pic) = tag.pictures().next() {
+                        let _ = tx_art.blocking_send(pic.data.clone());
+                    }
+                }
+                let _ = stream.seek(SeekFrom::Start(0));
+            }
+        }
+
         match Decoder::new(stream) {
             Ok(source) => {
                 sink_thread.append(source);
@@ -144,6 +173,17 @@ pub fn seek_relative(secs: f64) {
             let current = sink.get_pos();
             let new_pos = current.as_secs_f64() + secs;
             let _ = sink.try_seek(std::time::Duration::from_secs_f64(new_pos.max(0.0)));
+        }
+    }
+}
+
+pub fn set_volume(vol: f32) {
+    if let Ok(mut lock) = VOLUME.lock() {
+        *lock = vol.clamp(0.0, 1.0);
+        if let Ok(sink_lock) = GLOBAL_SINK.lock() {
+            if let Some(sink) = sink_lock.as_ref() {
+                sink.set_volume(*lock);
+            }
         }
     }
 }

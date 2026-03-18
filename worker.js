@@ -21,6 +21,20 @@ export default {
       return new Response(chunks, { headers: { "Content-Type": "application/x-ndjson", "Access-Control-Allow-Origin": "*" } });
     }
 
+    // --- 1.1 曲順変更 ---
+    if (path === "/reorder" && request.method === "POST") {
+      try {
+        const tracks = await request.json();
+        if (!Array.isArray(tracks)) {
+          return new Response("Invalid data format", { status: 400 });
+        }
+        await env.MUSIC_BUCKET.put("music_index.json", JSON.stringify(tracks));
+        return new Response("OK", { headers: { "Access-Control-Allow-Origin": "*" } });
+      } catch (e) {
+        return new Response(e.message, { status: 500 });
+      }
+    }
+
     // --- 2. ストリーミング & 歌詞 ---
     let type = "application/octet-stream";
     let rawKey = null;
@@ -32,7 +46,7 @@ export default {
       } else if (rawKey.toLowerCase().endsWith(".mp3")) {
         type = "audio/mpeg";
       }
-} else if (path.startsWith("/lyrics/")) {
+    } else if (path.startsWith("/lyrics/")) {
       type = "text/plain";
       rawKey = path.replace("/lyrics/", "");
     }
