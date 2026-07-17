@@ -1,7 +1,7 @@
 # music-tui
 
 [![Rust](https://img.shields.io/badge/language-Rust-orange.svg)](https://www.rust-lang.org/)
-[![Odin](https://img.shields.io/badge/language-Odin-blueviolet.svg)]https://odin-lang.org/)
+[![Odin](https://img.shields.io/badge/language-Odin-blueviolet.svg)](https://odin-lang.org/)
 [![Zig](https://img.shields.io/badge/language-Zig-f7a41d.svg)](https://ziglang.org/)
 [![License](https://img.shields.io/badge/license-Custom%20Non--Commercial-yellow.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux-lightgrey.svg)](https://www.kernel.org/)
