@@ -122,6 +122,10 @@ pub struct AppState {
     pub artist_list: Vec<String>,
     /// Cached sorted unique album names
     pub album_list: Vec<String>,
+    /// Search-filtered artist list (used in ArtistList view)
+    pub filtered_artist_list: Vec<String>,
+    /// Search-filtered album list (used in AlbumList view)
+    pub filtered_album_list: Vec<String>,
     pub is_shuffle: bool,
     pub playlists: HashMap<String, Vec<String>>,
     pub playlist_input: String,
@@ -159,7 +163,8 @@ impl AppState {
 
         let mut menu_state = ListState::default();
         menu_state.select(Some(0));
-        let content_list_state = ListState::default();
+        let mut content_list_state = ListState::default();
+        content_list_state.select(Some(0));
         let playlists = Self::load_playlists().unwrap_or_default();
 
         Self {
@@ -212,6 +217,8 @@ impl AppState {
             content_current: 0,
             artist_list: vec![],
             album_list: vec![],
+            filtered_artist_list: vec![],
+            filtered_album_list: vec![],
             is_shuffle: false,
             playlists,
             playlist_input: String::new(),
@@ -251,21 +258,85 @@ impl AppState {
 
     pub fn update_search(&mut self) {
         let search_lower = self.search.to_lowercase();
-        self.filtered_indices = self.tracks.iter().enumerate().filter(|(_, t)| {
-            let matches_search = t.title.to_lowercase().contains(&search_lower) || 
-                               t.artist.to_lowercase().contains(&search_lower) ||
-                               t.album.to_lowercase().contains(&search_lower);
-            let matches_favorite = if self.show_favorites_only {
-                self.favorites.contains(&t.path)
-            } else {
-                true
-            };
-            matches_search && matches_favorite
-        }).map(|(i, _)| i).collect();
+
+        let base_indices: Vec<usize> = match &self.content_view {
+            ContentView::ArtistTracks(artist) => {
+                self.tracks.iter().enumerate()
+                    .filter(|(_, t)| t.artist == *artist)
+                    .map(|(i, _)| i)
+                    .collect()
+            }
+            ContentView::AlbumTracks(album) => {
+                self.tracks.iter().enumerate()
+                    .filter(|(_, t)| t.album == *album)
+                    .map(|(i, _)| i)
+                    .collect()
+            }
+            ContentView::PlaylistTracks(name) => {
+                if let Some(paths) = self.playlists.get(name) {
+                    let path_set: HashSet<_> = paths.iter().collect();
+                    self.tracks.iter().enumerate()
+                        .filter(|(_, t)| path_set.contains(&t.path))
+                        .map(|(i, _)| i)
+                        .collect()
+                } else {
+                    (0..self.tracks.len()).collect()
+                }
+            }
+            ContentView::Favorites => {
+                self.tracks.iter().enumerate()
+                    .filter(|(_, t)| self.favorites.contains(&t.path))
+                    .map(|(i, _)| i)
+                    .collect()
+            }
+            ContentView::TrackList if self.show_favorites_only => {
+                self.tracks.iter().enumerate()
+                    .filter(|(_, t)| self.favorites.contains(&t.path))
+                    .map(|(i, _)| i)
+                    .collect()
+            }
+            _ => (0..self.tracks.len()).collect(),
+        };
+
+        self.filtered_indices = if search_lower.is_empty() {
+            base_indices
+        } else {
+            base_indices.into_iter().filter(|&i| {
+                let t = &self.tracks[i];
+                t.title.to_lowercase().contains(&search_lower)
+                    || t.artist.to_lowercase().contains(&search_lower)
+                    || t.album.to_lowercase().contains(&search_lower)
+            }).collect()
+        };
+
         if self.current >= self.filtered_indices.len() {
             self.current = if self.filtered_indices.is_empty() { 0 } else { self.filtered_indices.len() - 1 };
         }
+        let content_max = match &self.content_view {
+            ContentView::ArtistList => self.filtered_artist_list.len(),
+            ContentView::AlbumList => self.filtered_album_list.len(),
+            ContentView::PlaylistsList => self.playlists.len(),
+            _ => self.filtered_indices.len(),
+        };
+        if self.content_current >= content_max {
+            self.content_current = if content_max == 0 { 0 } else { content_max - 1 };
+        }
         self.list_state.select(Some(self.current));
+        self.content_list_state.select(Some(self.content_current));
+
+        if search_lower.is_empty() {
+            self.filtered_artist_list = self.artist_list.clone();
+            self.filtered_album_list = self.album_list.clone();
+        } else {
+            self.filtered_artist_list = self.artist_list.iter()
+                .filter(|a| a.to_lowercase().contains(&search_lower))
+                .cloned()
+                .collect();
+            self.filtered_album_list = self.album_list.iter()
+                .filter(|a| a.to_lowercase().contains(&search_lower))
+                .cloned()
+                .collect();
+        }
     }
 
     pub fn toggle_favorite(&mut self) {
@@ -359,10 +430,12 @@ impl AppState {
             MenuSelection::Artists => {
                 self.rebuild_caches();
                 self.content_view = ContentView::ArtistList;
+                self.update_search();
             }
             MenuSelection::Albums => {
                 self.rebuild_caches();
                 self.content_view = ContentView::AlbumList;
+                self.update_search();
             }
             MenuSelection::Favorites => {
                 self.show_favorites_only = true;
@@ -413,8 +486,8 @@ impl AppState {
     pub fn content_item_count(&self) -> usize {
         match &self.content_view {
             ContentView::TrackList => self.filtered_indices.len(),
-            ContentView::ArtistList => self.artist_list.len(),
-            ContentView::AlbumList => self.album_list.len(),
+            ContentView::ArtistList => self.filtered_artist_list.len(),
+            ContentView::AlbumList => self.filtered_album_list.len(),
             ContentView::PlaylistsList => self.playlists.len(),
             ContentView::ArtistTracks(_) | ContentView::AlbumTracks(_) | ContentView::PlaylistTracks(_) | ContentView::Favorites => self.filtered_indices.len(),
         }

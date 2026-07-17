@@ -5,7 +5,8 @@
   "main": "sync.js",
   "dependencies": {
     "@aws-sdk/client-s3": "^3.500.0",
-    "music-metadata": "^7.14.0",
-    "dotenv": "^16.0.0"
+    "copilot": "^0.0.2",
+    "dotenv": "^16.0.0",
+    "music-metadata": "^7.14.0"
   }
 }

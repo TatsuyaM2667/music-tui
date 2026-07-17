@@ -417,8 +417,8 @@ fn render_content(frame: &mut Frame, state: &AppState, area: Rect) {
             (title, items)
         }
         ContentView::ArtistList => {
-            let title = format!(" 👤 Artists ({}) ", state.artist_list.len());
-            let items: Vec<ListItem> = state.artist_list.iter().enumerate().map(|(i, artist)| {
+            let title = format!(" 👤 Artists ({}) ", state.filtered_artist_list.len());
+            let items: Vec<ListItem> = state.filtered_artist_list.iter().enumerate().map(|(i, artist)| {
                 let is_selected = state.content_current == i;
                 let track_count = state.tracks.iter().filter(|t| &t.artist == artist).count();
                 let mut style = Style::default().fg(Color::Rgb(140, 140, 140));
@@ -430,8 +430,8 @@ fn render_content(frame: &mut Frame, state: &AppState, area: Rect) {
             (title, items)
         }
         ContentView::AlbumList => {
-            let title = format!(" 💿 Albums ({}) ", state.album_list.len());
-            let items: Vec<ListItem> = state.album_list.iter().enumerate().map(|(i, album)| {
+            let title = format!(" 💿 Albums ({}) ", state.filtered_album_list.len());
+            let items: Vec<ListItem> = state.filtered_album_list.iter().enumerate().map(|(i, album)| {
                 let is_selected = state.content_current == i;
                 let track_count = state.tracks.iter().filter(|t| &t.album == album).count();
                 let mut style = Style::default().fg(Color::Rgb(140, 140, 140));

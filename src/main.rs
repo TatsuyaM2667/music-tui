@@ -320,8 +320,7 @@ async fn main() -> Result<()> {
                                             if state.content_current > 0 {
                                                 state.content_current -= 1;
                                                 state.content_list_state.select(Some(state.content_current));
-                                                // Sync track cursor for track views
-                                                if matches!(state.content_view, ContentView::TrackList | ContentView::ArtistTracks(_) | ContentView::AlbumTracks(_)) {
+                                                if matches!(state.content_view, ContentView::TrackList | ContentView::ArtistTracks(_) | ContentView::AlbumTracks(_) | ContentView::Favorites | ContentView::PlaylistTracks(_)) {
                                                     state.current = state.content_current;
                                                     state.list_state.select(Some(state.current));
                                                 }
@@ -352,7 +351,7 @@ async fn main() -> Result<()> {
                                             if state.content_current < max {
                                                 state.content_current += 1;
                                                 state.content_list_state.select(Some(state.content_current));
-                                                if matches!(state.content_view, ContentView::TrackList | ContentView::ArtistTracks(_) | ContentView::AlbumTracks(_)) {
+                                                if matches!(state.content_view, ContentView::TrackList | ContentView::ArtistTracks(_) | ContentView::AlbumTracks(_) | ContentView::Favorites | ContentView::PlaylistTracks(_)) {
                                                     state.current = state.content_current;
                                                     state.list_state.select(Some(state.current));
                                                 }
@@ -445,14 +444,14 @@ async fn main() -> Result<()> {
                                     ActivePane::Content => {
                                         match state.content_view {
                                             ContentView::ArtistList => {
-                                                if state.content_current < state.artist_list.len() {
-                                                    let artist = state.artist_list[state.content_current].clone();
+                                                if state.content_current < state.filtered_artist_list.len() {
+                                                    let artist = state.filtered_artist_list[state.content_current].clone();
                                                     state.filter_by_artist(&artist);
                                                 }
                                             }
                                             ContentView::AlbumList => {
-                                                if state.content_current < state.album_list.len() {
-                                                    let album = state.album_list[state.content_current].clone();
+                                                if state.content_current < state.filtered_album_list.len() {
+                                                    let album = state.filtered_album_list[state.content_current].clone();
                                                     state.filter_by_album(&album);
                                                 }
                                             }
