@@ -263,21 +263,18 @@ impl<'a> ratatui::widgets::Widget for OdinVideoWidget<'a> {
 
         for y in 0..render_h {
             for x in 0..render_w {
-                let idx = ((y as usize) * (frame.width as usize) + (x as usize)) * 12;
-                if idx + 11 < data.len() {
+                let idx = ((y as usize) * (frame.width as usize) + (x as usize)) * 8;
+                if idx + 7 < data.len() {
                     let char_code = u32::from_le_bytes([data[idx], data[idx+1], data[idx+2], data[idx+3]]);
-                    let fg_r = data[idx + 4];
-                    let fg_g = data[idx + 5];
-                    let fg_b = data[idx + 6];
-                    let bg_r = data[idx + 7];
-                    let bg_g = data[idx + 8];
-                    let bg_b = data[idx + 9];
+                    let r = data[idx + 4];
+                    let g = data[idx + 5];
+                    let b = data[idx + 6];
 
                     if let Some(cell) = buf.cell_mut((start_x + x, start_y + y)) {
                         if let Some(c) = char::from_u32(char_code) {
                             cell.set_char(c);
-                            cell.set_fg(ratatui::style::Color::Rgb(fg_r, fg_g, fg_b));
-                            cell.set_bg(ratatui::style::Color::Rgb(bg_r, bg_g, bg_b));
+                            cell.set_fg(ratatui::style::Color::Rgb(r, g, b));
+                            cell.set_bg(ratatui::style::Color::Black);
                         }
                     }
                 }

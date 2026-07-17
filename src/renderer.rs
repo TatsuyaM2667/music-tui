@@ -12,7 +12,7 @@ extern "C" {
 pub struct OdinVideoFrame {
     pub width: u16,
     pub height: u16,
-    pub data: Vec<u8>, // 12 bytes per cell: u32(char) + fg(r,g,b) + bg(r,g,b) + pad(2)
+    pub data: Vec<u8>, // 8 bytes per cell: u32(char) + fg(r,g,b) + pad
 }
 
 pub fn render_raw_rgb_to_cells(pixels: &[u8], in_width: u16, in_height: u16, target_width: u16, target_height: u16) -> Option<OdinVideoFrame> {
@@ -23,7 +23,7 @@ pub fn render_raw_rgb_to_cells(pixels: &[u8], in_width: u16, in_height: u16, tar
         return None;
     }
 
-    let capacity = (target_width as usize) * (target_height as usize) * 12;
+    let capacity = (target_width as usize) * (target_height as usize) * 8;
     let mut out_buffer = vec![0u8; capacity];
 
     unsafe {
