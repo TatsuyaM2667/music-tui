@@ -6,7 +6,7 @@ use std::fs;
 use std::time::Instant;
 use image::DynamicImage;
 use ratatui_image::picker::Picker;
-use ratatui_image::protocol::StatefulProtocol;
+use ratatui_image::protocol::Protocol;
 use souvlaki::{MediaControls, MediaControlEvent};
 use tokio::sync::mpsc;
 
@@ -50,14 +50,15 @@ pub struct AppState {
     pub volume: f32,
     pub album_art: Option<DynamicImage>,
     /// キャッシュ済みアルバムアートprotocol (毎フレーム再生成を避けるため)
-    pub album_art_protocol: Option<Box<dyn StatefulProtocol>>,
-    pub video_frame: Option<DynamicImage>,
+    pub album_art_protocol: Option<Protocol>,
+    pub video_frame: Option<crate::renderer::ZigVideoFrame>,
     pub is_playing_video: bool,
     pub art_temp_path: Option<String>,
     pub picker: Option<Picker>,
     // Media controls for OS integration
     pub media_controls: Option<MediaControls>,
     pub rx_media_events: mpsc::Receiver<MediaControlEvent>,
+    pub video_area_size: std::sync::Arc<std::sync::RwLock<(u16, u16)>>,
 }
 
 impl AppState {
@@ -129,6 +130,7 @@ impl AppState {
             picker,
             media_controls,
             rx_media_events: rx,
+            video_area_size: std::sync::Arc::new(std::sync::RwLock::new((80, 24))),
         }
     }
 

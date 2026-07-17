@@ -2,10 +2,10 @@ mod api;
 mod state;
 mod player;
 mod ui;
+mod renderer;
 
 use api::*;
 use state::*;
-use image::DynamicImage;
 
 use std::io::{stdout, Write};
 use std::time::{Duration, Instant};
@@ -62,11 +62,9 @@ async fn main() -> Result<()> {
     let (tx_lyrics, mut rx_lyrics) = tokio::sync::mpsc::channel::<(String, Result<String>)>(10);
     let (tx_player_status, mut rx_player_status) = tokio::sync::mpsc::channel::<String>(10);
     let (tx_album_art, mut rx_album_art) = tokio::sync::mpsc::channel::<Vec<u8>>(10);
-    let (tx_video_frame, mut rx_video_frame) = tokio::sync::mpsc::channel::<DynamicImage>(30);
+    let (tx_video_frame, mut rx_video_frame) = tokio::sync::mpsc::channel::<crate::renderer::ZigVideoFrame>(30);
 
     let mut video_task: Option<tokio::task::JoinHandle<()>> = None;
-    let mut last_playing_id: Option<String> = None;
-    let mut last_paused: bool = false;
     let mut last_tick = Instant::now();
     let mut last_key: Option<(KeyCode, Instant)> = None;
     // フレームレート制限: 目標 ~30fps = 33ms/frame
@@ -224,7 +222,7 @@ async fn main() -> Result<()> {
                                         
                                         if let Some(task) = video_task.take() { task.abort(); }
                                         // Start from 0.0 as durations may differ
-                                        video_task = Some(spawn_video_task(url, 0.0, tx_video_frame.clone()));
+                                        video_task = Some(spawn_video_task(url, 0.0, tx_video_frame.clone(), state.video_area_size.clone()));
                                     }
                                 }
                             }
@@ -402,6 +400,7 @@ async fn main() -> Result<()> {
                         _ => {}
                     }
                 }
+                _ => {}
             } // match ev
         } // if event::poll
         } // if elapsed < FRAME_DURATION
@@ -519,7 +518,7 @@ fn parse_lrc(lrc: &str) -> Vec<(f64, String)> {
     result
 }
 
-fn spawn_video_task(url: String, start_pos: f64, tx: tokio::sync::mpsc::Sender<DynamicImage>) -> tokio::task::JoinHandle<()> {
+fn spawn_video_task(url: String, start_pos: f64, tx: tokio::sync::mpsc::Sender<crate::renderer::ZigVideoFrame>, video_area_size: std::sync::Arc<std::sync::RwLock<(u16, u16)>>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         use tokio::io::AsyncReadExt;
         
@@ -572,13 +571,13 @@ fn spawn_video_task(url: String, start_pos: f64, tx: tokio::sync::mpsc::Sender<D
                 if let Some(end) = find_subsequence(&buffer, &[0xFF, 0xD9]) {
                     let jpeg_data: Vec<_> = buffer.drain(0..end + 2).collect();
                     if let Ok(img) = image::load_from_memory(&jpeg_data) {
-                        // try_send: バッファが満杯ならフレームをドロップ (ブロックしない)
-                        match tx.try_send(img) {
-                            Ok(_) => {}
-                            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                                // バッファ満湱: フレームをスキップ
+                        let size = *video_area_size.read().unwrap();
+                        if let Some(frame) = crate::renderer::render_image_to_cells(&img, size.0, size.1) {
+                            match tx.try_send(frame) {
+                                Ok(_) => {}
+                                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
+                                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
                             }
-                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
                         }
                     }
                 } else {

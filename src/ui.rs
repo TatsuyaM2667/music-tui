@@ -1,8 +1,8 @@
 use ratatui::{
     prelude::*,
-    widgets::{Paragraph, Block, Borders, List, ListItem, Gauge, Wrap},
+    widgets::{Paragraph, Block, Borders, List, ListItem, Wrap},
 };
-use ratatui_image::{Image, Resize};
+use ratatui_image::Image;
 use crate::state::{AppState, InputMode};
 
 pub fn draw_ui(frame: &mut Frame, state: &mut AppState) {
@@ -115,7 +115,7 @@ fn render_art(frame: &mut Frame, state: &mut AppState, area: Rect) {
                 }
             }
             if let Some(protocol) = &state.album_art_protocol {
-                let image_widget = Image::new(protocol.as_ref());
+                let image_widget = Image::new(protocol);
                 frame.render_widget(image_widget, art_inner);
                 return;
             }
@@ -239,16 +239,45 @@ fn render_controls(frame: &mut Frame, state: &mut AppState, area: Rect) {
     }
 }
 
-fn render_lyrics(frame: &mut Frame, state: &AppState, area: Rect) {
-    if state.is_playing_video {
-        if let Some(img) = &state.video_frame {
-            if let Some(picker) = &state.picker {
-                if let Ok(protocol) = picker.new_protocol(img.clone(), area, Resize::Fit(None)) {
-                    let image_widget = Image::new(&protocol);
-                    frame.render_widget(image_widget, area);
-                    return;
+struct ZigVideoWidget<'a> {
+    frame_data: &'a crate::renderer::ZigVideoFrame,
+}
+
+impl<'a> ratatui::widgets::Widget for ZigVideoWidget<'a> {
+    fn render(self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
+        let f = self.frame_data;
+        let draw_w = area.width.min(f.width);
+        let draw_h = area.height.min(f.height);
+        
+        let start_x = area.x + (area.width - draw_w) / 2;
+        let start_y = area.y + (area.height - draw_h) / 2;
+
+        for y in 0..draw_h {
+            for x in 0..draw_w {
+                let idx = ((y * f.width + x) * 6) as usize;
+                if idx + 5 < f.data.len() {
+                    let cell = buf.get_mut(start_x + x, start_y + y);
+                    cell.set_symbol("▀");
+                    cell.set_fg(ratatui::style::Color::Rgb(f.data[idx], f.data[idx+1], f.data[idx+2]));
+                    cell.set_bg(ratatui::style::Color::Rgb(f.data[idx+3], f.data[idx+4], f.data[idx+5]));
                 }
             }
+        }
+    }
+}
+
+fn render_lyrics(frame: &mut ratatui::Frame, state: &AppState, area: Rect) {
+    if state.is_playing_video {
+        if let Ok(mut size) = state.video_area_size.write() {
+            if *size != (area.width, area.height) {
+                *size = (area.width, area.height);
+            }
+        }
+
+        if let Some(img) = &state.video_frame {
+            let widget = ZigVideoWidget { frame_data: img };
+            frame.render_widget(widget, area);
+            return;
         }
         frame.render_widget(Paragraph::new("🎬 Loading video...").alignment(Alignment::Center), area);
         return;
