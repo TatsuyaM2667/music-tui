@@ -1,7 +1,7 @@
 use crate::api::TrackInfo;
 use ratatui::widgets::ListState;
 use ratatui::layout::Rect;
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::fs;
 use std::time::Instant;
 use image::DynamicImage;
@@ -10,12 +10,62 @@ use ratatui_image::protocol::Protocol;
 use souvlaki::{MediaControls, MediaControlEvent};
 use tokio::sync::mpsc;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputMode {
     Normal,
     Editing,
+    PlaylistInput,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivePane {
+    Menu,
+    Content,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuSelection {
+    AllTracks,
+    Artists,
+    Albums,
+    Favorites,
+    Playlists,
+}
+
+impl MenuSelection {
+    pub const ALL: [MenuSelection; 5] = [
+        MenuSelection::AllTracks,
+        MenuSelection::Artists,
+        MenuSelection::Albums,
+        MenuSelection::Favorites,
+        MenuSelection::Playlists,
+    ];
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            MenuSelection::AllTracks => "♫ 全曲",
+            MenuSelection::Artists => "👤 アーティスト",
+            MenuSelection::Albums => "💿 アルバム",
+            MenuSelection::Favorites => "⭐ お気に入り",
+            MenuSelection::Playlists => "📁 プレイリスト",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContentView {
+    TrackList,
+    ArtistList,
+    AlbumList,
+    Favorites,
+    PlaylistsList,
+    ArtistTracks(String),
+    AlbumTracks(String),
+    PlaylistTracks(String),
 }
 
 const FAV_FILE: &str = "favorites.json";
+const PLAYLISTS_FILE: &str = "playlists.json";
 
 pub struct AppState {
     pub tracks: Vec<TrackInfo>,
@@ -61,6 +111,20 @@ pub struct AppState {
     pub video_area_size: std::sync::Arc<std::sync::RwLock<(u16, u16)>>,
     pub video_playback_pos: f64,
     pub video_duration: f64,
+    // --- Menu / Content pane state ---
+    pub active_pane: ActivePane,
+    pub menu_selection: MenuSelection,
+    pub menu_state: ListState,
+    pub content_view: ContentView,
+    pub content_list_state: ListState,
+    pub content_current: usize,
+    /// Cached sorted unique artist names
+    pub artist_list: Vec<String>,
+    /// Cached sorted unique album names
+    pub album_list: Vec<String>,
+    pub is_shuffle: bool,
+    pub playlists: HashMap<String, Vec<String>>,
+    pub playlist_input: String,
 }
 
 impl AppState {
@@ -92,6 +156,11 @@ impl AppState {
         };
         #[cfg(not(target_os = "linux"))]
         let media_controls = None;
+
+        let mut menu_state = ListState::default();
+        menu_state.select(Some(0));
+        let content_list_state = ListState::default();
+        let playlists = Self::load_playlists().unwrap_or_default();
 
         Self {
             tracks,
@@ -135,6 +204,17 @@ impl AppState {
             video_area_size: std::sync::Arc::new(std::sync::RwLock::new((80, 24))),
             video_playback_pos: 0.0,
             video_duration: 0.0,
+            active_pane: ActivePane::Menu,
+            menu_selection: MenuSelection::AllTracks,
+            menu_state,
+            content_view: ContentView::TrackList,
+            content_list_state,
+            content_current: 0,
+            artist_list: vec![],
+            album_list: vec![],
+            is_shuffle: false,
+            playlists,
+            playlist_input: String::new(),
         }
     }
 
@@ -146,9 +226,20 @@ impl AppState {
         }
     }
 
-    fn save_favorites(&self) {
-        if let Ok(data) = serde_json::to_string(&self.favorites) {
-            let _ = fs::write(FAV_FILE, data);
+    pub fn save_state(&self) -> Result<(), anyhow::Error> {
+        let data = serde_json::to_string(&self.favorites)?;
+        fs::write(FAV_FILE, data)?;
+        
+        let pl_data = serde_json::to_string(&self.playlists)?;
+        fs::write(PLAYLISTS_FILE, pl_data)?;
+        Ok(())
+    }
+
+    fn load_playlists() -> Option<HashMap<String, Vec<String>>> {
+        if let Ok(data) = fs::read_to_string(PLAYLISTS_FILE) {
+            serde_json::from_str(&data).ok()
+        } else {
+            None
         }
     }
 
@@ -185,7 +276,7 @@ impl AppState {
             } else {
                 self.favorites.insert(path);
             }
-            self.save_favorites();
+            let _ = self.save_state();
             if self.show_favorites_only {
                 self.update_search();
             }
@@ -220,5 +311,123 @@ impl AppState {
         self.current = target_idx;
         self.list_state.select(Some(self.current));
         self.last_action = format!("Moved {}", if up { "Up" } else { "Down" });
+    }
+
+    /// Rebuild the cached artist and album lists from tracks
+    pub fn finalize_loading(&mut self) {
+        self.tracks.sort_by(|a, b| {
+            a.artist.to_lowercase().cmp(&b.artist.to_lowercase())
+                .then_with(|| a.album.to_lowercase().cmp(&b.album.to_lowercase()))
+                .then_with(|| a.track_number.cmp(&b.track_number))
+                .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+        });
+        self.rebuild_caches();
+    }
+
+    pub fn rebuild_caches(&mut self) {
+        let mut artists: Vec<String> = self.tracks.iter()
+            .map(|t| t.artist.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        artists.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+        self.artist_list = artists;
+
+        // Build album list
+        let mut albums: HashSet<(String, String)> = HashSet::new();
+        for track in &self.tracks {
+            if !track.album.is_empty() {
+                albums.insert((track.artist.clone(), track.album.clone()));
+            }
+        }
+        let mut album_vec: Vec<(String, String)> = albums.into_iter().collect();
+        // Sort by artist, then by album
+        album_vec.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        self.album_list = album_vec.into_iter().map(|(_, album)| album).collect();
+    }
+
+    /// Called when the user switches menu selection; updates content_view and filtered_indices
+    pub fn apply_menu_selection(&mut self) {
+        self.content_current = 0;
+        self.content_list_state.select(Some(0));
+        match self.menu_selection {
+            MenuSelection::AllTracks => {
+                self.show_favorites_only = false;
+                self.content_view = ContentView::TrackList;
+                self.update_search();
+            }
+            MenuSelection::Artists => {
+                self.rebuild_caches();
+                self.content_view = ContentView::ArtistList;
+            }
+            MenuSelection::Albums => {
+                self.rebuild_caches();
+                self.content_view = ContentView::AlbumList;
+            }
+            MenuSelection::Favorites => {
+                self.show_favorites_only = true;
+                self.content_view = ContentView::Favorites;
+                self.update_search();
+            }
+            MenuSelection::Playlists => {
+                self.show_favorites_only = false;
+                self.content_view = ContentView::PlaylistsList;
+            }
+        }
+    }
+
+    /// Filter tracks for a specific artist or album
+    pub fn filter_by_artist(&mut self, artist: &str) {
+        let search_lower = self.search.to_lowercase();
+        self.filtered_indices = self.tracks.iter().enumerate().filter(|(_, t)| {
+            let matches_artist = t.artist == artist;
+            let matches_search = search_lower.is_empty() || 
+                t.title.to_lowercase().contains(&search_lower) ||
+                t.artist.to_lowercase().contains(&search_lower);
+            matches_artist && matches_search
+        }).map(|(i, _)| i).collect();
+        self.current = 0;
+        self.list_state.select(Some(0));
+        self.content_current = 0;
+        self.content_list_state.select(Some(0));
+        self.content_view = ContentView::ArtistTracks(artist.to_string());
+    }
+
+    pub fn filter_by_album(&mut self, album: &str) {
+        let search_lower = self.search.to_lowercase();
+        self.filtered_indices = self.tracks.iter().enumerate().filter(|(_, t)| {
+            let matches_album = t.album == album;
+            let matches_search = search_lower.is_empty() || 
+                t.title.to_lowercase().contains(&search_lower) ||
+                t.album.to_lowercase().contains(&search_lower);
+            matches_album && matches_search
+        }).map(|(i, _)| i).collect();
+        self.current = 0;
+        self.list_state.select(Some(0));
+        self.content_current = 0;
+        self.content_list_state.select(Some(0));
+        self.content_view = ContentView::AlbumTracks(album.to_string());
+    }
+
+    /// Get the count of content items for the current view
+    pub fn content_item_count(&self) -> usize {
+        match &self.content_view {
+            ContentView::TrackList => self.filtered_indices.len(),
+            ContentView::ArtistList => self.artist_list.len(),
+            ContentView::AlbumList => self.album_list.len(),
+            ContentView::PlaylistsList => self.playlists.len(),
+            ContentView::ArtistTracks(_) | ContentView::AlbumTracks(_) | ContentView::PlaylistTracks(_) | ContentView::Favorites => self.filtered_indices.len(),
+        }
+    }
+
+    pub fn filter_by_playlist(&mut self, playlist: &str) {
+        if let Some(paths) = self.playlists.get(playlist) {
+            let path_set: HashSet<_> = paths.iter().collect();
+            self.filtered_indices = self.tracks.iter().enumerate()
+                .filter(|(_, t)| path_set.contains(&t.path))
+                .map(|(i, _)| i)
+                .collect();
+            self.content_view = ContentView::PlaylistTracks(playlist.to_string());
+        }
     }
 }

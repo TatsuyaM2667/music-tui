@@ -1857,6 +1857,7 @@ dependencies = [
  "image",
  "lru",
  "once_cell",
+ "rand 0.8.5",
  "ratatui",
  "ratatui-image",
  "reqwest",
@@ -2870,7 +2871,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

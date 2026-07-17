@@ -3,19 +3,18 @@ use ratatui::{
     widgets::{Paragraph, Block, Borders, List, ListItem, Wrap},
 };
 use ratatui_image::Image;
-use crate::state::{AppState, InputMode};
+use crate::state::{AppState, InputMode, ActivePane, MenuSelection, ContentView};
 
 pub fn draw_ui(frame: &mut Frame, state: &mut AppState) {
     let size = frame.area();
 
-    // 縦長（画面分割など）の場合の判定
     let is_vertical = size.width < 90;
 
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(0),      // Player
-            Constraint::Length(if is_vertical { 8 } else { 10 }), // Playlist
+            Constraint::Length(if is_vertical { 8 } else { 12 }), // Playlist area
             Constraint::Length(1),   // Help Footer
         ])
         .split(size);
@@ -23,6 +22,10 @@ pub fn draw_ui(frame: &mut Frame, state: &mut AppState) {
     render_player_area(frame, state, main_chunks[0], is_vertical);
     render_playlist_and_search(frame, state, main_chunks[1]);
     render_help(frame, state, main_chunks[2]);
+
+    if state.input_mode == InputMode::PlaylistInput {
+        render_playlist_popup(frame, state, size);
+    }
 }
 
 fn render_player_area(frame: &mut Frame, state: &mut AppState, area: Rect, is_vertical: bool) {
@@ -344,50 +347,191 @@ fn render_lyrics(frame: &mut ratatui::Frame, state: &AppState, area: Rect) {
 }
 
 fn render_playlist_and_search(frame: &mut Frame, state: &AppState, area: Rect) {
-    let chunks = Layout::default()
+    // Split into left menu (25%) and right content (75%)
+    let main_split = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(70), // Playlist
-            Constraint::Percentage(30), // Search
+            Constraint::Percentage(25), // Menu
+            Constraint::Percentage(75), // Content
         ])
         .split(area);
 
-    let list_items: Vec<ListItem> = state.filtered_indices.iter().enumerate().map(|(i, &idx)| {
-        let track = &state.tracks[idx];
-        let is_selected = i == state.current;
-        let is_playing = state.playing_id.as_ref().map_or(false, |id| id == &track.path);
-        let is_fav = state.favorites.contains(&track.path);
-        
-        let video_indicator = if track.video.is_some() { " 🎬" } else { "" };
-        let fav_indicator = if is_fav { " ⭐" } else { "" };
-        
-        let mut style = Style::default();
-        if is_selected { style = style.bg(Color::Rgb(40, 40, 80)).fg(Color::White); }
-        if is_playing { style = style.fg(Color::Cyan); }
-        
-        let prefix = if is_playing { "▶ " } else { "  " };
-        ListItem::new(format!("{}{} - {}{}{}", prefix, track.title, track.artist, video_indicator, fav_indicator)).style(style)
+    render_menu(frame, state, main_split[0]);
+    render_content(frame, state, main_split[1]);
+}
+
+fn render_menu(frame: &mut Frame, state: &AppState, area: Rect) {
+    let is_focused = matches!(state.active_pane, ActivePane::Menu);
+    let border_color = if is_focused { Color::Cyan } else { Color::Rgb(50, 50, 50) };
+    let title_style = if is_focused {
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let items: Vec<ListItem> = MenuSelection::ALL.iter().enumerate().map(|(i, sel)| {
+        let is_selected = state.menu_state.selected() == Some(i);
+        let mut style = Style::default().fg(Color::Rgb(140, 140, 140));
+        if is_selected && is_focused {
+            style = style.fg(Color::Cyan).bg(Color::Rgb(30, 50, 70)).add_modifier(Modifier::BOLD);
+        } else if is_selected {
+            style = style.fg(Color::White).bg(Color::Rgb(40, 40, 50));
+        }
+        let prefix = if is_selected { "▸ " } else { "  " };
+        ListItem::new(format!("{}{}", prefix, sel.label())).style(style)
     }).collect();
 
-    let mut list_state = state.list_state.clone();
+    let menu_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color))
+        .title(Span::styled(" Menu ", title_style));
+
+    frame.render_widget(
+        List::new(items).block(menu_block),
+        area,
+    );
+}
+
+fn render_content(frame: &mut Frame, state: &AppState, area: Rect) {
+    let is_focused = matches!(state.active_pane, ActivePane::Content);
+    let border_color = if is_focused { Color::Cyan } else { Color::Rgb(50, 50, 50) };
+
+    // Split content area into list + search bar
+    let content_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),      // List
+            Constraint::Length(3),    // Search
+        ])
+        .split(area);
+
+    // Determine title and items based on content_view
+    let (title, items) = match &state.content_view {
+        ContentView::TrackList => {
+            let title = if state.show_favorites_only {
+                format!(" ⭐ Favorites ({}) ", state.filtered_indices.len())
+            } else {
+                format!(" ♫ All Tracks ({}) ", state.filtered_indices.len())
+            };
+            let items = build_track_list_items(state);
+            (title, items)
+        }
+        ContentView::ArtistList => {
+            let title = format!(" 👤 Artists ({}) ", state.artist_list.len());
+            let items: Vec<ListItem> = state.artist_list.iter().enumerate().map(|(i, artist)| {
+                let is_selected = state.content_current == i;
+                let track_count = state.tracks.iter().filter(|t| &t.artist == artist).count();
+                let mut style = Style::default().fg(Color::Rgb(140, 140, 140));
+                if is_selected && is_focused {
+                    style = style.fg(Color::White).bg(Color::Rgb(40, 40, 80));
+                }
+                ListItem::new(format!("  {} ({} tracks)", artist, track_count)).style(style)
+            }).collect();
+            (title, items)
+        }
+        ContentView::AlbumList => {
+            let title = format!(" 💿 Albums ({}) ", state.album_list.len());
+            let items: Vec<ListItem> = state.album_list.iter().enumerate().map(|(i, album)| {
+                let is_selected = state.content_current == i;
+                let track_count = state.tracks.iter().filter(|t| &t.album == album).count();
+                let mut style = Style::default().fg(Color::Rgb(140, 140, 140));
+                if is_selected && is_focused {
+                    style = style.fg(Color::White).bg(Color::Rgb(40, 40, 80));
+                }
+                ListItem::new(format!("  {} ({} tracks)", album, track_count)).style(style)
+            }).collect();
+            (title, items)
+        }
+        ContentView::ArtistTracks(artist) => {
+            let title = format!(" 👤 {} ({}) ", artist, state.filtered_indices.len());
+            let items = build_track_list_items(state);
+            (title, items)
+        }
+        ContentView::AlbumTracks(album) => {
+            let title = format!(" 💿 {} ({}) ", album, state.filtered_indices.len());
+            let items = build_track_list_items(state);
+            (title, items)
+        }
+        ContentView::Favorites => {
+            let title = format!(" ⭐ Favorites ({}) ", state.filtered_indices.len());
+            let items = build_track_list_items(state);
+            (title, items)
+        }
+        ContentView::PlaylistsList => {
+            let title = format!(" 📁 Playlists ({}) ", state.playlists.len());
+            let mut pl_names: Vec<&String> = state.playlists.keys().collect();
+            pl_names.sort();
+            let items: Vec<ListItem> = pl_names.iter().enumerate().map(|(i, &name)| {
+                let is_selected = state.content_current == i;
+                let track_count = state.playlists.get(name).map_or(0, |v| v.len());
+                let mut style = Style::default().fg(Color::Rgb(140, 140, 140));
+                if is_selected && is_focused {
+                    style = style.fg(Color::White).bg(Color::Rgb(40, 40, 80));
+                }
+                ListItem::new(format!("  {} ({} tracks)", name, track_count)).style(style)
+            }).collect();
+            (title, items)
+        }
+        ContentView::PlaylistTracks(name) => {
+            let title = format!(" 📁 {} ({}) ", name, state.filtered_indices.len());
+            let items = build_track_list_items(state);
+            (title, items)
+        }
+    };
+
+    let list_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color))
+        .title(Span::styled(
+            title,
+            if is_focused {
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            },
+        ));
+
+    let mut content_list_state = state.content_list_state.clone();
     frame.render_stateful_widget(
-        List::new(list_items).block(Block::default().borders(Borders::ALL).title(" Playlist ").border_style(Style::default().fg(Color::Rgb(50, 50, 50)))),
-        chunks[0],
-        &mut list_state
+        List::new(items).block(list_block),
+        content_chunks[0],
+        &mut content_list_state,
     );
 
+    // Search bar
     let search_label = if matches!(state.input_mode, InputMode::Editing) { " Searching... " } else { " Search [/] " };
     let search_style = if matches!(state.input_mode, InputMode::Editing) { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::DarkGray) };
     frame.render_widget(
         Paragraph::new(format!(" > {} ", state.search))
             .block(Block::default().borders(Borders::ALL).title(search_label).border_style(search_style))
             .style(if matches!(state.input_mode, InputMode::Editing) { Style::default().fg(Color::White) } else { Style::default().fg(Color::Gray) }),
-        chunks[1],
+        content_chunks[1],
     );
 }
 
+fn build_track_list_items(state: &AppState) -> Vec<ListItem<'static>> {
+    state.filtered_indices.iter().enumerate().map(|(i, &idx)| {
+        let track = &state.tracks[idx];
+        let is_selected = i == state.content_current;
+        let is_playing = state.playing_id.as_ref().map_or(false, |id| id == &track.path);
+        let is_fav = state.favorites.contains(&track.path);
+
+        let video_indicator = if track.video.is_some() { " 🎬" } else { "" };
+        let fav_indicator = if is_fav { " ⭐" } else { "" };
+
+        let mut style = Style::default().fg(Color::Rgb(140, 140, 140));
+        let is_focused = matches!(state.active_pane, ActivePane::Content);
+        if is_selected && is_focused { style = style.bg(Color::Rgb(40, 40, 80)).fg(Color::White); }
+        if is_playing { style = style.fg(Color::Cyan); }
+
+        let prefix = if is_playing { "▶ " } else { "  " };
+        ListItem::new(format!("{}{} - {}{}{}", prefix, track.title, track.artist, video_indicator, fav_indicator)).style(style)
+    }).collect()
+}
+
 fn render_help(frame: &mut Frame, state: &AppState, area: Rect) {
-    let help_text = " q:Quit | /:Search | f:Fav | Shift+F:Toggle View | Space:Play/Pause | v:TUI Video | Shift+V:MPV ";
+    let shuffle_indicator = if state.is_shuffle { "[S:ON] " } else { "" };
+    let help_text = format!(" q:Quit | Tab:Pane | /:Search | f:Fav | p:Playlist | s:Shuffle | Space:Play/Pause | v:Video | Enter:Select {}", shuffle_indicator);
     let action_text = format!(" [{}] ", state.last_action);
     let help_chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -398,4 +542,64 @@ fn render_help(frame: &mut Frame, state: &AppState, area: Rect) {
         .split(area);
     frame.render_widget(Paragraph::new(help_text).style(Style::default().fg(Color::Rgb(80, 80, 80))), help_chunks[0]);
     frame.render_widget(Paragraph::new(action_text).style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)), help_chunks[1]);
+}
+
+fn render_playlist_popup(frame: &mut Frame, state: &AppState, area: Rect) {
+    let popup_area = centered_rect(50, 20, area);
+    let block = Block::default()
+        .title(" Add to Playlist ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .bg(Color::Rgb(20, 20, 20));
+
+    let inner_area = block.inner(popup_area);
+    frame.render_widget(ratatui::widgets::Clear, popup_area);
+    frame.render_widget(block, popup_area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(3),
+        ])
+        .margin(1)
+        .split(inner_area);
+
+    let track_title = state.current_track().map(|t| t.title.as_str()).unwrap_or("Unknown");
+    let info_text = Paragraph::new(format!("Adding track: {}", track_title))
+        .style(Style::default().fg(Color::Gray));
+    frame.render_widget(info_text, chunks[0]);
+
+    let instruction = Paragraph::new("Enter playlist name (existing or new):")
+        .style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(instruction, chunks[1]);
+
+    let input_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    let input_text = Paragraph::new(state.playlist_input.as_str())
+        .block(input_block)
+        .style(Style::default().fg(Color::White));
+    frame.render_widget(input_text, chunks[2]);
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
 }

@@ -10,6 +10,7 @@ use state::*;
 use std::io::{stdout, Write};
 use std::time::{Duration, Instant};
 use std::sync::atomic::Ordering;
+use rand::Rng;
 
 use anyhow::Result;
 
@@ -99,7 +100,12 @@ async fn main() -> Result<()> {
                     }
                 }
                 MediaControlEvent::Next => {
-                    if state.current < state.filtered_indices.len().saturating_sub(1) {
+                    if state.is_shuffle && state.filtered_indices.len() > 1 {
+                        state.current = rand::thread_rng().gen_range(0..state.filtered_indices.len());
+                        state.list_state.select(Some(state.current));
+                        state.last_action = "🔀".into();
+                        play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone(), &mut video_task);
+                    } else if state.current < state.filtered_indices.len().saturating_sub(1) {
                         state.current += 1;
                         state.list_state.select(Some(state.current));
                         state.last_action = "⏭".into();
@@ -173,11 +179,18 @@ async fn main() -> Result<()> {
         }
 
         while let Ok(p) = rx_progress.try_recv() { state.load_progress = p; }
+        let mut loaded = false;
         while let Ok(track) = rx_track.try_recv() {
             state.tracks.push(track);
+            loaded = true;
+        }
+        if loaded {
+            state.is_loading = state.load_progress < 99.9;
+            if !state.is_loading {
+                state.finalize_loading();
+            }
             state.update_search();
             if state.tracks.len() == 1 { state.list_state.select(Some(0)); }
-            state.is_loading = state.load_progress < 99.9;
         }
 
         while let Ok((path, result)) = rx_lyrics.try_recv() {
@@ -259,7 +272,18 @@ async fn main() -> Result<()> {
                             }
                             KeyCode::Char('f') => {
                                 state.toggle_favorite();
-                                state.last_action = "⭐".into();
+                                state.last_action = "⭐ Fav".into();
+                            }
+                            KeyCode::Char('s') => {
+                                state.is_shuffle = !state.is_shuffle;
+                                state.last_action = "🔀 Shuffle".into();
+                            }
+                            KeyCode::Char('p') => {
+                                if state.current_track().is_some() {
+                                    state.input_mode = InputMode::PlaylistInput;
+                                    state.playlist_input.clear();
+                                    state.last_action = "Playlist".into();
+                                }
                             }
                             KeyCode::Char('F') => {
                                 state.toggle_favorite_view();
@@ -283,7 +307,27 @@ async fn main() -> Result<()> {
                                         let _ = update_track_order(&tracks_copy).await;
                                     });
                                 } else {
-                                    if state.current > 0 { state.current -= 1; state.list_state.select(Some(state.current)); }
+                                    match state.active_pane {
+                                        ActivePane::Menu => {
+                                            let sel = state.menu_state.selected().unwrap_or(0);
+                                            if sel > 0 {
+                                                state.menu_state.select(Some(sel - 1));
+                                                state.menu_selection = MenuSelection::ALL[sel - 1];
+                                                state.apply_menu_selection();
+                                            }
+                                        }
+                                        ActivePane::Content => {
+                                            if state.content_current > 0 {
+                                                state.content_current -= 1;
+                                                state.content_list_state.select(Some(state.content_current));
+                                                // Sync track cursor for track views
+                                                if matches!(state.content_view, ContentView::TrackList | ContentView::ArtistTracks(_) | ContentView::AlbumTracks(_)) {
+                                                    state.current = state.content_current;
+                                                    state.list_state.select(Some(state.current));
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             KeyCode::Down => {
@@ -294,38 +338,215 @@ async fn main() -> Result<()> {
                                         let _ = update_track_order(&tracks_copy).await;
                                     });
                                 } else {
-                                    if state.current < state.filtered_indices.len().saturating_sub(1) { state.current += 1; state.list_state.select(Some(state.current)); }
+                                    match state.active_pane {
+                                        ActivePane::Menu => {
+                                            let sel = state.menu_state.selected().unwrap_or(0);
+                                            if sel < MenuSelection::ALL.len() - 1 {
+                                                state.menu_state.select(Some(sel + 1));
+                                                state.menu_selection = MenuSelection::ALL[sel + 1];
+                                                state.apply_menu_selection();
+                                            }
+                                        }
+                                        ActivePane::Content => {
+                                            let max = state.content_item_count().saturating_sub(1);
+                                            if state.content_current < max {
+                                                state.content_current += 1;
+                                                state.content_list_state.select(Some(state.content_current));
+                                                if matches!(state.content_view, ContentView::TrackList | ContentView::ArtistTracks(_) | ContentView::AlbumTracks(_)) {
+                                                    state.current = state.content_current;
+                                                    state.list_state.select(Some(state.current));
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             KeyCode::Left => {
-                                let is_repeat = last_key.map_or(false, |(c, t)| c == KeyCode::Left && now.duration_since(t) < Duration::from_millis(200));
-                                if is_repeat { player::seek_relative(-5.0); state.last_action = "⏪".into(); }
-                                else if state.current > 0 { state.current -= 1; state.list_state.select(Some(state.current)); state.last_action = "⏮".into(); play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone(), &mut video_task); }
+                                match state.active_pane {
+                                    ActivePane::Menu => {
+                                        // Nothing to do left of menu
+                                    }
+                                    ActivePane::Content => {
+                                        let is_repeat = last_key.map_or(false, |(c, t)| c == KeyCode::Left && now.duration_since(t) < Duration::from_millis(200));
+                                        if is_repeat { 
+                                            player::seek_relative(-5.0); 
+                                            state.last_action = "⏪".into(); 
+                                        } else {
+                                            // Go back up hierarchy or to menu
+                                            match state.content_view {
+                                                ContentView::ArtistTracks(_) => {
+                                                    state.content_view = ContentView::ArtistList;
+                                                    state.content_current = 0;
+                                                    state.content_list_state.select(Some(0));
+                                                }
+                                                ContentView::AlbumTracks(_) => {
+                                                    state.content_view = ContentView::AlbumList;
+                                                    state.content_current = 0;
+                                                    state.content_list_state.select(Some(0));
+                                                }
+                                                ContentView::PlaylistTracks(_) => {
+                                                    state.content_view = ContentView::PlaylistsList;
+                                                    state.content_current = 0;
+                                                    state.content_list_state.select(Some(0));
+                                                }
+                                                _ => {
+                                                    state.active_pane = ActivePane::Menu;
+                                                    state.last_action = "Menu Focus".into();
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                                 last_key = Some((KeyCode::Left, now));
                             }
                             KeyCode::Right => {
-                                let is_repeat = last_key.map_or(false, |(c, t)| c == KeyCode::Right && now.duration_since(t) < Duration::from_millis(200));
-                                if is_repeat { player::seek_relative(5.0); state.last_action = "⏩".into(); }
-                                else if state.current < state.filtered_indices.len().saturating_sub(1) { state.current += 1; state.list_state.select(Some(state.current)); state.last_action = "⏭".into(); play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone(), &mut video_task); }
+                                match state.active_pane {
+                                    ActivePane::Menu => {
+                                        state.active_pane = ActivePane::Content;
+                                        state.last_action = "Content Focus".into();
+                                    }
+                                    ActivePane::Content => {
+                                        let is_repeat = last_key.map_or(false, |(c, t)| c == KeyCode::Right && now.duration_since(t) < Duration::from_millis(200));
+                                        if is_repeat { 
+                                            player::seek_relative(5.0); 
+                                            state.last_action = "⏩".into(); 
+                                        } else if matches!(state.content_view, ContentView::TrackList | ContentView::ArtistTracks(_) | ContentView::AlbumTracks(_) | ContentView::PlaylistTracks(_) | ContentView::Favorites) {
+                                            if state.is_shuffle && state.filtered_indices.len() > 1 {
+                                                state.current = rand::thread_rng().gen_range(0..state.filtered_indices.len());
+                                                state.list_state.select(Some(state.current)); 
+                                                state.content_current = state.current;
+                                                state.content_list_state.select(Some(state.content_current));
+                                                state.last_action = "🔀".into(); 
+                                                play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone(), &mut video_task); 
+                                            } else if state.current < state.filtered_indices.len().saturating_sub(1) { 
+                                                state.current += 1; 
+                                                state.list_state.select(Some(state.current)); 
+                                                state.content_current = state.current;
+                                                state.content_list_state.select(Some(state.content_current));
+                                                state.last_action = "⏭".into(); 
+                                                play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone(), &mut video_task); 
+                                            }
+                                        }
+                                    }
+                                }
                                 last_key = Some((KeyCode::Right, now));
                             }
-                            KeyCode::Enter | KeyCode::Char(' ') => {
+                            KeyCode::Enter => {
                                 if state.is_playing_video {
                                     state.is_playing_video = false;
                                     state.video_frame = None;
                                     if let Some(task) = video_task.take() { task.abort(); }
                                 }
                                 
-                                if key.code == KeyCode::Char(' ') && state.playing_id.is_some() {
+                                match state.active_pane {
+                                    ActivePane::Menu => {
+                                        state.active_pane = ActivePane::Content;
+                                    }
+                                    ActivePane::Content => {
+                                        match state.content_view {
+                                            ContentView::ArtistList => {
+                                                if state.content_current < state.artist_list.len() {
+                                                    let artist = state.artist_list[state.content_current].clone();
+                                                    state.filter_by_artist(&artist);
+                                                }
+                                            }
+                                            ContentView::AlbumList => {
+                                                if state.content_current < state.album_list.len() {
+                                                    let album = state.album_list[state.content_current].clone();
+                                                    state.filter_by_album(&album);
+                                                }
+                                            }
+                                            ContentView::PlaylistsList => {
+                                                let mut pl_names: Vec<&String> = state.playlists.keys().collect();
+                                                pl_names.sort();
+                                                if state.content_current < pl_names.len() {
+                                                    let pl = pl_names[state.content_current].clone();
+                                                    state.filter_by_playlist(&pl);
+                                                }
+                                            }
+                                            ContentView::TrackList | ContentView::ArtistTracks(_) | ContentView::AlbumTracks(_) | ContentView::PlaylistTracks(_) | ContentView::Favorites => {
+                                                state.last_action = "▶".into();
+                                                play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone(), &mut video_task);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            KeyCode::Char(' ') => {
+                                if state.is_playing_video {
+                                    state.is_playing_video = false;
+                                    state.video_frame = None;
+                                    if let Some(task) = video_task.take() { task.abort(); }
+                                }
+                                
+                                if state.playing_id.is_some() {
                                     state.is_paused = player::toggle_pause();
                                     state.last_action = if state.is_paused { "⏸".into() } else { "▶".into() };
                                     if let Some(controls) = &mut state.media_controls {
                                         let _ = controls.set_playback(if state.is_paused { MediaPlayback::Paused { progress: None } } else { MediaPlayback::Playing { progress: None } });
                                     }
-                                } else {
-                                    state.last_action = "▶".into();
-                                    play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone(), &mut video_task);
                                 }
+                            }
+                            KeyCode::Tab => {
+                                state.active_pane = match state.active_pane {
+                                    ActivePane::Menu => ActivePane::Content,
+                                    ActivePane::Content => ActivePane::Menu,
+                                };
+                            }
+                            KeyCode::Esc => {
+                                if matches!(state.active_pane, ActivePane::Content) {
+                                    match state.content_view {
+                                        ContentView::ArtistTracks(_) => {
+                                            state.content_view = ContentView::ArtistList;
+                                            state.content_current = 0;
+                                            state.content_list_state.select(Some(0));
+                                        }
+                                        ContentView::AlbumTracks(_) => {
+                                            state.content_view = ContentView::AlbumList;
+                                            state.content_current = 0;
+                                            state.content_list_state.select(Some(0));
+                                        }
+                                        ContentView::PlaylistTracks(_) => {
+                                            state.content_view = ContentView::PlaylistsList;
+                                            state.content_current = 0;
+                                            state.content_list_state.select(Some(0));
+                                        }
+                                        _ => {
+                                            state.active_pane = ActivePane::Menu;
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        },
+                        InputMode::PlaylistInput => match key.code {
+                            KeyCode::Enter => {
+                                if !state.playlist_input.is_empty() {
+                                    if let Some(track) = state.current_track() {
+                                        let path = track.path.clone();
+                                        state.playlists
+                                            .entry(state.playlist_input.clone())
+                                            .or_insert_with(Vec::new)
+                                            .push(path);
+                                        let _ = state.save_state();
+                                        // Update UI if currently viewing PlaylistsList
+                                        if state.content_view == ContentView::PlaylistsList {
+                                            state.apply_menu_selection();
+                                        }
+                                    }
+                                }
+                                state.input_mode = InputMode::Normal;
+                                state.last_action = "Saved Playlist".into();
+                            }
+                            KeyCode::Char(c) => {
+                                state.playlist_input.push(c);
+                            }
+                            KeyCode::Backspace => {
+                                state.playlist_input.pop();
+                            }
+                            KeyCode::Esc => {
+                                state.input_mode = InputMode::Normal;
+                                state.last_action = "Cancel Playlist".into();
                             }
                             _ => {}
                         },
@@ -365,7 +586,17 @@ async fn main() -> Result<()> {
                             }
                             if let Some(area) = state.next_button_area {
                                 if col >= area.x && col < area.x + area.width && row == area.y {
-                                    if state.current < state.filtered_indices.len().saturating_sub(1) { state.current += 1; state.list_state.select(Some(state.current)); state.last_action = "⏭".into(); play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone(), &mut video_task); }
+                                    if state.is_shuffle && state.filtered_indices.len() > 1 {
+                                        state.current = rand::thread_rng().gen_range(0..state.filtered_indices.len());
+                                        state.list_state.select(Some(state.current));
+                                        state.last_action = "🔀".into();
+                                        play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone(), &mut video_task);
+                                    } else if state.current < state.filtered_indices.len().saturating_sub(1) { 
+                                        state.current += 1; 
+                                        state.list_state.select(Some(state.current)); 
+                                        state.last_action = "⏭".into(); 
+                                        play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone(), &mut video_task); 
+                                    }
                                 }
                             }
 
@@ -428,7 +659,14 @@ async fn main() -> Result<()> {
             if reached_end || is_near_end {
                 let current_playing_idx = state.filtered_indices.iter().position(|&idx| Some(&state.tracks[idx].path) == state.playing_id.as_ref());
                 if let Some(idx_in_filtered) = current_playing_idx {
-                    if idx_in_filtered < state.filtered_indices.len() - 1 {
+                    if state.is_shuffle && state.filtered_indices.len() > 1 {
+                        let mut next_idx = rand::thread_rng().gen_range(0..state.filtered_indices.len());
+                        if next_idx == idx_in_filtered { next_idx = (next_idx + 1) % state.filtered_indices.len(); }
+                        state.current = next_idx;
+                        state.list_state.select(Some(state.current));
+                        state.last_action = "🔀".into();
+                        play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone(), &mut video_task);
+                    } else if idx_in_filtered < state.filtered_indices.len() - 1 {
                         state.current = idx_in_filtered + 1;
                         state.list_state.select(Some(state.current));
                         state.last_action = "⏭".into();
