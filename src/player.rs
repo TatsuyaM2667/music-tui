@@ -96,7 +96,10 @@ pub fn play_from_url_streaming(
         match Decoder::new(fully_buffered) {
             Ok(source) => {
                 sink_thread.append(source);
-                sink_thread.play();
+                // Do NOT call sink_thread.play() here! 
+                // If the user pressed 'v' while buffering, player::pause() was called.
+                // Calling play() overrides the user's pause and causes audio to play simultaneously with the video.
+                // rodio's Sink automatically plays appended sources if it hasn't been paused.
                 let _ = tx_err.blocking_send("Playing".into());
             }
             Err(e) => { let _ = tx_err.blocking_send(format!("Decode Error: {:?}", e)); }

@@ -210,6 +210,11 @@ async fn main() -> Result<()> {
                                     state.video_frame = None;
                                     if let Some(task) = video_task.take() { task.abort(); }
                                     state.last_action = "📜 Lyrics".into();
+                                    
+                                    // Resume music automatically when returning from video
+                                    if state.is_paused {
+                                        state.is_paused = player::toggle_pause();
+                                    }
                                 } else {
                                     let video_info = state.current_track().and_then(|t| {
                                         t.video.as_ref().map(|v| v.clone())
