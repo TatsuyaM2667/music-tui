@@ -532,13 +532,12 @@ fn spawn_video_task(url: String, start_pos: f64, tx: tokio::sync::mpsc::Sender<c
                 "-reconnect_delay_max", "2",
                 "-ss", &format!("{:.2}", start_pos),
                 "-i", &url,
-                // Video: TUI向けに解像度とfpsを抑える
+                // Video: Raw RGB output to completely eliminate decoding overhead
                 "-map", "0:v:0",
-                "-vf", "scale=640:-1:flags=fast_bilinear", // TUIは640pで十分
-                "-f", "image2pipe",
-                "-vcodec", "mjpeg",
-                "-q:v", "5", // 生成負荷を軽減
-                "-r", "10",  // 30fps → 10fps (発熱の主因: TUIに30fpsは過剑)
+                "-vf", "scale=320:180:flags=fast_bilinear",
+                "-f", "rawvideo",
+                "-pix_fmt", "rgb24",
+                "-r", "15", // 15 fps
                 "-tune", "zerolatency",
                 "-",
                 // Audio: ALSA
@@ -554,34 +553,20 @@ fn spawn_video_task(url: String, start_pos: f64, tx: tokio::sync::mpsc::Sender<c
             };
 
         let mut stdout = child.stdout.take().unwrap();
-        let mut buffer = Vec::with_capacity(128 * 1024);
-        let mut tmp_buf = [0u8; 16384];
+        let frame_size = 320 * 180 * 3;
+        let mut frame_buf = vec![0u8; frame_size];
 
         loop {
-            let n = match stdout.read(&mut tmp_buf).await {
-                Ok(0) => break,
-                Ok(n) => n,
-                Err(_) => break,
-            };
-            buffer.extend_from_slice(&tmp_buf[..n]);
+            if let Err(_) = stdout.read_exact(&mut frame_buf).await {
+                break;
+            }
 
-            // MJPEG parsing: Start of Image (FF D8) to End of Image (FF D9)
-            while let Some(start) = find_subsequence(&buffer, &[0xFF, 0xD8]) {
-                if start > 0 { buffer.drain(0..start); }
-                if let Some(end) = find_subsequence(&buffer, &[0xFF, 0xD9]) {
-                    let jpeg_data: Vec<_> = buffer.drain(0..end + 2).collect();
-                    if let Ok(img) = image::load_from_memory(&jpeg_data) {
-                        let size = *video_area_size.read().unwrap();
-                        if let Some(frame) = crate::renderer::render_image_to_cells(&img, size.0, size.1) {
-                            match tx.try_send(frame) {
-                                Ok(_) => {}
-                                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
-                                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
-                            }
-                        }
-                    }
-                } else {
-                    break;
+            let size = *video_area_size.read().unwrap();
+            if let Some(frame) = crate::renderer::render_raw_rgb_to_cells(&frame_buf, 320, 180, size.0, size.1) {
+                match tx.try_send(frame) {
+                    Ok(_) => {}
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
                 }
             }
         }
