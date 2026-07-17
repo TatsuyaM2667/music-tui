@@ -51,7 +51,7 @@ pub struct AppState {
     pub album_art: Option<DynamicImage>,
     /// キャッシュ済みアルバムアートprotocol (毎フレーム再生成を避けるため)
     pub album_art_protocol: Option<Protocol>,
-    pub video_frame: Option<crate::renderer::ZigVideoFrame>,
+    pub video_frame: Option<crate::renderer::OdinVideoFrame>,
     pub is_playing_video: bool,
     pub art_temp_path: Option<String>,
     pub picker: Option<Picker>,

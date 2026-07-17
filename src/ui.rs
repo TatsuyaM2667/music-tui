@@ -239,27 +239,47 @@ fn render_controls(frame: &mut Frame, state: &mut AppState, area: Rect) {
     }
 }
 
-struct ZigVideoWidget<'a> {
-    frame_data: &'a crate::renderer::ZigVideoFrame,
+pub struct OdinVideoWidget<'a> {
+    frame: &'a crate::renderer::OdinVideoFrame,
 }
 
-impl<'a> ratatui::widgets::Widget for ZigVideoWidget<'a> {
-    fn render(self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
-        let f = self.frame_data;
-        let draw_w = area.width.min(f.width);
-        let draw_h = area.height.min(f.height);
-        
-        let start_x = area.x + (area.width - draw_w) / 2;
-        let start_y = area.y + (area.height - draw_h) / 2;
+impl<'a> OdinVideoWidget<'a> {
+    pub fn new(frame: &'a crate::renderer::OdinVideoFrame) -> Self {
+        Self { frame }
+    }
+}
 
-        for y in 0..draw_h {
-            for x in 0..draw_w {
-                let idx = ((y * f.width + x) * 6) as usize;
-                if idx + 5 < f.data.len() {
-                    let cell = buf.get_mut(start_x + x, start_y + y);
-                    cell.set_symbol("▀");
-                    cell.set_fg(ratatui::style::Color::Rgb(f.data[idx], f.data[idx+1], f.data[idx+2]));
-                    cell.set_bg(ratatui::style::Color::Rgb(f.data[idx+3], f.data[idx+4], f.data[idx+5]));
+impl<'a> ratatui::widgets::Widget for OdinVideoWidget<'a> {
+    fn render(self, area: ratatui::layout::Rect, buf: &mut ratatui::prelude::Buffer) {
+        let frame = self.frame;
+
+        let render_w = std::cmp::min(area.width, frame.width);
+        let render_h = std::cmp::min(area.height, frame.height);
+
+        let start_x = area.x + (area.width.saturating_sub(render_w)) / 2;
+        let start_y = area.y + (area.height.saturating_sub(render_h)) / 2;
+
+        let data = &frame.data;
+
+        for y in 0..render_h {
+            for x in 0..render_w {
+                let idx = ((y as usize) * (frame.width as usize) + (x as usize)) * 12;
+                if idx + 11 < data.len() {
+                    let char_code = u32::from_le_bytes([data[idx], data[idx+1], data[idx+2], data[idx+3]]);
+                    let fg_r = data[idx + 4];
+                    let fg_g = data[idx + 5];
+                    let fg_b = data[idx + 6];
+                    let bg_r = data[idx + 7];
+                    let bg_g = data[idx + 8];
+                    let bg_b = data[idx + 9];
+
+                    if let Some(cell) = buf.cell_mut((start_x + x, start_y + y)) {
+                        if let Some(c) = char::from_u32(char_code) {
+                            cell.set_char(c);
+                            cell.set_fg(ratatui::style::Color::Rgb(fg_r, fg_g, fg_b));
+                            cell.set_bg(ratatui::style::Color::Rgb(bg_r, bg_g, bg_b));
+                        }
+                    }
                 }
             }
         }
@@ -275,7 +295,7 @@ fn render_lyrics(frame: &mut ratatui::Frame, state: &AppState, area: Rect) {
         }
 
         if let Some(img) = &state.video_frame {
-            let widget = ZigVideoWidget { frame_data: img };
+            let widget = OdinVideoWidget::new(img);
             frame.render_widget(widget, area);
             return;
         }

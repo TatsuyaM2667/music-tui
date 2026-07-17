@@ -62,7 +62,7 @@ async fn main() -> Result<()> {
     let (tx_lyrics, mut rx_lyrics) = tokio::sync::mpsc::channel::<(String, Result<String>)>(10);
     let (tx_player_status, mut rx_player_status) = tokio::sync::mpsc::channel::<String>(10);
     let (tx_album_art, mut rx_album_art) = tokio::sync::mpsc::channel::<Vec<u8>>(10);
-    let (tx_video_frame, mut rx_video_frame) = tokio::sync::mpsc::channel::<crate::renderer::ZigVideoFrame>(30);
+    let (tx_video_frame, mut rx_video_frame) = tokio::sync::mpsc::channel::<crate::renderer::OdinVideoFrame>(30);
 
     let mut video_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut last_tick = Instant::now();
@@ -518,32 +518,44 @@ fn parse_lrc(lrc: &str) -> Vec<(f64, String)> {
     result
 }
 
-fn spawn_video_task(url: String, start_pos: f64, tx: tokio::sync::mpsc::Sender<crate::renderer::ZigVideoFrame>, video_area_size: std::sync::Arc<std::sync::RwLock<(u16, u16)>>) -> tokio::task::JoinHandle<()> {
+fn spawn_video_task(url: String, start_pos: f64, tx: tokio::sync::mpsc::Sender<crate::renderer::OdinVideoFrame>, video_area_size: std::sync::Arc<std::sync::RwLock<(u16, u16)>>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         use tokio::io::AsyncReadExt;
-        
-        let mut child = match tokio::process::Command::new("ffmpeg")
+
+        // === Audio process (completely independent) ===
+        let _audio_child = tokio::process::Command::new("ffmpeg")
             .kill_on_drop(true)
             .args(&[
-                "-re",
-                "-thread_queue_size", "512", 
                 "-reconnect", "1",
                 "-reconnect_streamed", "1",
                 "-reconnect_delay_max", "2",
                 "-ss", &format!("{:.2}", start_pos),
                 "-i", &url,
-                // Video: Raw RGB output to completely eliminate decoding overhead
-                "-map", "0:v:0",
+                "-vn",
+                "-af", "aresample=async=1000",
+                "-buffer_size", "65536",
+                "-f", "alsa", "default",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+
+        // === Video process (pipe raw RGB to stdout) ===
+        let mut video_child = match tokio::process::Command::new("ffmpeg")
+            .kill_on_drop(true)
+            .args(&[
+                "-re",
+                "-reconnect", "1",
+                "-reconnect_streamed", "1",
+                "-reconnect_delay_max", "2",
+                "-ss", &format!("{:.2}", start_pos),
+                "-i", &url,
+                "-an",
                 "-vf", "scale=320:180:flags=fast_bilinear",
                 "-f", "rawvideo",
                 "-pix_fmt", "rgb24",
-                "-r", "15", // 15 fps
-                "-tune", "zerolatency",
+                "-r", "15",
                 "-",
-                // Audio: ALSA
-                "-map", "0:a?",
-                "-af", "aresample=async=1000",
-                "-f", "alsa", "default"
             ])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
@@ -552,22 +564,37 @@ fn spawn_video_task(url: String, start_pos: f64, tx: tokio::sync::mpsc::Sender<c
                 Err(_) => return,
             };
 
-        let mut stdout = child.stdout.take().unwrap();
+        let mut stdout = video_child.stdout.take().unwrap();
         let frame_size = 320 * 180 * 3;
-        let mut frame_buf = vec![0u8; frame_size];
 
+        // Use a small bounded channel to allow the render thread to drop stale frames
+        let (raw_tx, mut raw_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(3);
+
+        // Odin FFI rendering on a dedicated blocking thread
+        tokio::task::spawn_blocking(move || {
+            while let Some(frame_buf) = raw_rx.blocking_recv() {
+                let size = *video_area_size.read().unwrap();
+                if let Some(frame) = crate::renderer::render_raw_rgb_to_cells(&frame_buf, 320, 180, size.0, size.1) {
+                    match tx.try_send(frame) {
+                        Ok(_) => {}
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
+                    }
+                }
+            }
+        });
+
+        // Read frames at native rate; bounded channel naturally drops stale frames
         loop {
-            if let Err(_) = stdout.read_exact(&mut frame_buf).await {
+            let mut frame_buf = vec![0u8; frame_size];
+            if stdout.read_exact(&mut frame_buf).await.is_err() {
                 break;
             }
-
-            let size = *video_area_size.read().unwrap();
-            if let Some(frame) = crate::renderer::render_raw_rgb_to_cells(&frame_buf, 320, 180, size.0, size.1) {
-                match tx.try_send(frame) {
-                    Ok(_) => {}
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
-                }
+            // If render thread is busy, drop this frame (send fails on full channel)
+            match raw_tx.try_send(frame_buf) {
+                Ok(_) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
             }
         }
     })
