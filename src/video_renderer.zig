@@ -1,9 +1,7 @@
 const std = @import("std");
 
-/// RGBピクセルバッファ(in_pixels)をターゲットのターミナルセルサイズにリサイズし、
-/// 前景色(上半分)と背景色(下半分)のRGB値を抽出する。
-/// アスペクト比を維持し、余白は黒(0,0,0)で埋める(レターボックス化)。
-///
+/// RGBピクセルバッファ(in_pixels)をターゲットのターミナルセルサイズにリサイズし、前景色(上半分)と背景色(下半分)のRGB値を抽出
+/// アスペクト比を維持し、余白は黒(0,0,0)(レターボックス化)。
 /// `in_pixels`: 元画像のRGB8バッファ (サイズ: in_width * in_height * 3)
 /// `in_width`: 元画像の幅 (ピクセル単位)
 /// `in_height`: 元画像の高さ (ピクセル単位)
@@ -43,9 +41,13 @@ export fn generate_terminal_cells(
         var cx: u32 = 0;
         while (cx < target_width) : (cx += 1) {
             const px: u32 = cx;
-            
-            var r_fg: u8 = 0; var g_fg: u8 = 0; var b_fg: u8 = 0;
-            var r_bg: u8 = 0; var g_bg: u8 = 0; var b_bg: u8 = 0;
+
+            var r_fg: u8 = 0;
+            var g_fg: u8 = 0;
+            var b_fg: u8 = 0;
+            var r_bg: u8 = 0;
+            var g_bg: u8 = 0;
+            var b_bg: u8 = 0;
 
             // Top Pixel
             if (px >= off_x and px < off_x + drawn_width and py_top >= off_y and py_top < off_y + drawn_height) {
