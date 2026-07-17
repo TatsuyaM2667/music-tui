@@ -60,6 +60,7 @@ fn render_player_area(frame: &mut Frame, state: &mut AppState, area: Rect, is_ve
         frame.render_widget(lyric_block, vertical_chunks[1]);
         let lyric_inner = vertical_chunks[1].inner(Margin { horizontal: 1, vertical: 1 });
         state.lyric_area = Some(lyric_inner);
+        state.video_area = Some(lyric_inner);
         render_lyrics(frame, state, lyric_inner);
 
     } else {
@@ -87,13 +88,14 @@ fn render_player_area(frame: &mut Frame, state: &mut AppState, area: Rect, is_ve
         frame.render_widget(lyric_block, top_chunks[1]);
         let lyric_inner = top_chunks[1].inner(Margin { horizontal: 1, vertical: 1 });
         state.lyric_area = Some(lyric_inner);
+        state.video_area = Some(lyric_inner);
         render_lyrics(frame, state, lyric_inner);
     }
 
     render_controls(frame, state, chunks[1]);
 }
 
-fn render_art(frame: &mut Frame, state: &AppState, area: Rect) {
+fn render_art(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let art_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Rgb(60, 60, 60)))
@@ -101,20 +103,28 @@ fn render_art(frame: &mut Frame, state: &AppState, area: Rect) {
     frame.render_widget(art_block, area);
     
     let art_inner = area.inner(Margin { horizontal: 1, vertical: 1 });
-    if let Some(img) = &state.album_art {
+    if state.album_art.is_some() {
         if let Some(picker) = &state.picker {
-            let dyn_img = img.clone();
-            if let Ok(protocol) = picker.new_protocol(dyn_img, art_inner, Resize::Fit(None)) {
-                let image_widget = Image::new(&protocol);
+            // protocolが未生成またはエリア変更の場合のみ再生成
+            if state.album_art_protocol.is_none() {
+                if let Some(img) = &state.album_art {
+                    match picker.new_protocol(img.clone(), art_inner, ratatui_image::Resize::Fit(None)) {
+                        Ok(protocol) => { state.album_art_protocol = Some(protocol); }
+                        Err(_) => {}
+                    }
+                }
+            }
+            if let Some(protocol) = &state.album_art_protocol {
+                let image_widget = Image::new(protocol.as_ref());
                 frame.render_widget(image_widget, art_inner);
+                return;
             }
         }
-    } else {
-        frame.render_widget(
-            Paragraph::new("\n 🎵").alignment(Alignment::Center).style(Style::default().fg(Color::DarkGray)),
-            art_inner
-        );
     }
+    frame.render_widget(
+        Paragraph::new("\n 🎵").alignment(Alignment::Center).style(Style::default().fg(Color::DarkGray)),
+        art_inner
+    );
 }
 
 fn render_large_info(frame: &mut Frame, state: &AppState, area: Rect) {
@@ -161,7 +171,7 @@ fn render_controls(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // Gauge
+            Constraint::Length(1), // Seek Bar
             Constraint::Length(1), // Buttons
             Constraint::Min(0),
         ])
@@ -175,13 +185,40 @@ fn render_controls(frame: &mut Frame, state: &mut AppState, area: Rect) {
         let pos = state.playback_pos;
         let duration = t.duration.max(1.0);
         let percent = ((pos / duration) * 100.0).min(100.0) as u16;
-        let progress_label = format!("{:.0}:{:02} / {:.0}:{:02}", pos / 60.0, (pos as i32) % 60, duration / 60.0, (duration as i32) % 60);
-        let gauge = Gauge::default()
-            .gauge_style(Style::default().fg(Color::Cyan).bg(Color::Rgb(20, 20, 20)))
-            .percent(percent)
-            .label(Span::styled(progress_label, Style::default().fg(Color::White)));
-        frame.render_widget(gauge, chunks[0]);
+        
+        // --- 可視化された再生バー ---
+        let seek_bar_area = chunks[0];
+        state.seek_bar_area = Some(seek_bar_area);
+        
+        let symbols = [" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉", "█"];
+        let width = seek_bar_area.width as usize;
+        let filled_width = (width * percent as usize) / 100;
+        let remainder = (width * percent as usize) % 100;
+        let partial_idx = (remainder * (symbols.len() - 1)) / 100;
 
+        let mut bar_str = String::with_capacity(width * 3);
+        for i in 0..width {
+            if i < filled_width {
+                bar_str.push_str("█");
+            } else if i == filled_width && partial_idx > 0 {
+                bar_str.push_str(symbols[partial_idx]);
+            } else {
+                bar_str.push_str(" ");
+            }
+        }
+
+        let progress_label = format!(" {:.0}:{:02} / {:.0}:{:02} ", pos / 60.0, (pos as i32) % 60, duration / 60.0, (duration as i32) % 60);
+        
+        frame.render_widget(
+            Paragraph::new(bar_str).style(Style::default().fg(Color::Cyan).bg(Color::Rgb(30, 30, 30))),
+            seek_bar_area
+        );
+        frame.render_widget(
+            Paragraph::new(progress_label).alignment(Alignment::Right).style(Style::default().fg(Color::White)),
+            seek_bar_area
+        );
+
+        // --- ボタン ---
         let btn_area = chunks[1];
         let center_x = btn_area.x + btn_area.width / 2;
         let prev_btn = " [⏮ Prev] ";
@@ -203,6 +240,20 @@ fn render_controls(frame: &mut Frame, state: &mut AppState, area: Rect) {
 }
 
 fn render_lyrics(frame: &mut Frame, state: &AppState, area: Rect) {
+    if state.is_playing_video {
+        if let Some(img) = &state.video_frame {
+            if let Some(picker) = &state.picker {
+                if let Ok(protocol) = picker.new_protocol(img.clone(), area, Resize::Fit(None)) {
+                    let image_widget = Image::new(&protocol);
+                    frame.render_widget(image_widget, area);
+                    return;
+                }
+            }
+        }
+        frame.render_widget(Paragraph::new("🎬 Loading video...").alignment(Alignment::Center), area);
+        return;
+    }
+
     if state.parsed_lyrics.is_empty() {
         frame.render_widget(Paragraph::new(state.current_lyric.clone()).alignment(Alignment::Center), area);
         return;
@@ -289,7 +340,7 @@ fn render_playlist_and_search(frame: &mut Frame, state: &AppState, area: Rect) {
 }
 
 fn render_help(frame: &mut Frame, state: &AppState, area: Rect) {
-    let help_text = " q:Quit | /:Search | f:Fav | Shift+F:Toggle View | Space:Play/Pause | Wheel:Scroll Lyrics ";
+    let help_text = " q:Quit | /:Search | f:Fav | Shift+F:Toggle View | Space:Play/Pause | v:TUI Video | Shift+V:MPV ";
     let action_text = format!(" [{}] ", state.last_action);
     let help_chunks = Layout::default()
         .direction(Direction::Horizontal)

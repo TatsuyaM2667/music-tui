@@ -1,6 +1,6 @@
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
 use anyhow::{Result, anyhow};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::sync::{Arc, Mutex};
 use once_cell::sync::Lazy;
 
@@ -13,50 +13,29 @@ static AUDIO_HANDLE: Lazy<OutputStreamHandle> = Lazy::new(|| {
 static GLOBAL_SINK: Lazy<Mutex<Option<Arc<Sink>>>> = Lazy::new(|| Mutex::new(None));
 static VOLUME: Lazy<Mutex<f32>> = Lazy::new(|| Mutex::new(1.0));
 
-// 再生ズレを完全に解消するためのストリーミングラッパー
-// 読んだデータをすべて Vec に貯めることで、デコーダの「先頭に戻る」要求に完璧に応える
-struct StreamingBuffer<R: Read> {
-    inner: R,
-    data: Vec<u8>,
-    pos: usize,
+// ストリーミングデータを全バッファリングしてからデコードするラッパー
+// rodio の Decoder は Seek を要求するため、ダウンロード済みデータを cursor でラップする
+struct FullyBuffered {
+    cursor: std::io::Cursor<Vec<u8>>,
 }
 
-impl<R: Read> Read for StreamingBuffer<R> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if self.pos < self.data.len() {
-            let n = (&self.data[self.pos..]).read(buf)?;
-            self.pos += n;
-            Ok(n)
-        } else {
-            let n = self.inner.read(buf)?;
-            if n > 0 {
-                self.data.extend_from_slice(&buf[..n]);
-                self.pos += n;
-            }
-            Ok(n)
-        }
+impl FullyBuffered {
+    fn from_reader<R: Read>(mut reader: R) -> std::io::Result<Self> {
+        let mut data = Vec::new();
+        reader.read_to_end(&mut data)?;
+        Ok(Self { cursor: std::io::Cursor::new(data) })
     }
 }
 
-impl<R: Read> Seek for StreamingBuffer<R> {
+impl Read for FullyBuffered {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.cursor.read(buf)
+    }
+}
+
+impl Seek for FullyBuffered {
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
-        let new_pos = match pos {
-            SeekFrom::Start(s) => s as i64,
-            SeekFrom::Current(c) => self.pos as i64 + c,
-            SeekFrom::End(_) => return Ok(self.pos as u64),
-        };
-        if new_pos < 0 { return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid seek")); }
-        let new_pos = new_pos as usize;
-        
-        if new_pos <= self.data.len() {
-            self.pos = new_pos;
-            Ok(self.pos as u64)
-        } else {
-            let diff = new_pos - self.pos;
-            let mut skip_buf = vec![0u8; diff.min(1024 * 1024)]; // 最大1MBずつ
-            let _ = self.read(&mut skip_buf)?;
-            Ok(self.pos as u64)
-        }
+        self.cursor.seek(pos)
     }
 }
 
@@ -78,7 +57,7 @@ pub fn play_from_url_streaming(
     let sink_thread = sink.clone();
     std::thread::spawn(move || {
         let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(30))
             .build().unwrap();
         
         let _ = tx_err.blocking_send("Connecting...".into());
@@ -92,28 +71,29 @@ pub fn play_from_url_streaming(
             return;
         }
 
-        let _ = tx_err.blocking_send("Decoding...".into());
-        let mut stream = StreamingBuffer { inner: response, data: Vec::with_capacity(512 * 1024), pos: 0 };
-        
-        // Try to read ID3 tags for album art
-        let mut header = vec![0u8; 10];
-        if let Ok(_) = stream.read_exact(&mut header) {
-            let _ = stream.seek(SeekFrom::Start(0));
-            if &header[0..3] == b"ID3" {
-                // ID3 tag found, try to read it
-                // We need enough data to read the whole tag. 
-                // For simplicity, let's try to read it from what we have or wait a bit.
-                // id3 crate Tag::read_from2 works with Seek + Read.
-                if let Ok(tag) = id3::Tag::read_from2(&mut stream) {
+        let _ = tx_err.blocking_send("Buffering...".into());
+
+        // BufReader でラップしてから全バッファリング
+        let buffered_reader = BufReader::new(response);
+        let fully_buffered = match FullyBuffered::from_reader(buffered_reader) {
+            Ok(b) => b,
+            Err(e) => { let _ = tx_err.blocking_send(format!("Read Error: {}", e)); return; }
+        };
+
+        // Try to read ID3 tags for album art from the buffered data
+        {
+            let data = fully_buffered.cursor.get_ref();
+            if data.len() >= 3 && &data[0..3] == b"ID3" {
+                let mut cursor = std::io::Cursor::new(data.as_slice());
+                if let Ok(tag) = id3::Tag::read_from2(&mut cursor) {
                     if let Some(pic) = tag.pictures().next() {
                         let _ = tx_art.blocking_send(pic.data.clone());
                     }
                 }
-                let _ = stream.seek(SeekFrom::Start(0));
             }
         }
 
-        match Decoder::new(stream) {
+        match Decoder::new(fully_buffered) {
             Ok(source) => {
                 sink_thread.append(source);
                 sink_thread.play();
@@ -160,7 +140,6 @@ pub fn get_position() -> f64 {
 pub fn is_finished() -> bool {
     if let Ok(lock) = GLOBAL_SINK.lock() {
         if let Some(sink) = lock.as_ref() {
-            // sink.empty() かつ 0.5秒以上経過している場合に終了とみなす
             return sink.empty() && sink.get_pos().as_secs_f64() > 0.5;
         }
     }

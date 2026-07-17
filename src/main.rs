@@ -5,6 +5,7 @@ mod ui;
 
 use api::*;
 use state::*;
+use image::DynamicImage;
 
 use std::io::{stdout, Write};
 use std::time::{Duration, Instant};
@@ -61,11 +62,19 @@ async fn main() -> Result<()> {
     let (tx_lyrics, mut rx_lyrics) = tokio::sync::mpsc::channel::<(String, Result<String>)>(10);
     let (tx_player_status, mut rx_player_status) = tokio::sync::mpsc::channel::<String>(10);
     let (tx_album_art, mut rx_album_art) = tokio::sync::mpsc::channel::<Vec<u8>>(10);
+    let (tx_video_frame, mut rx_video_frame) = tokio::sync::mpsc::channel::<DynamicImage>(30);
 
+    let mut video_task: Option<tokio::task::JoinHandle<()>> = None;
+    let mut last_playing_id: Option<String> = None;
+    let mut last_paused: bool = false;
     let mut last_tick = Instant::now();
     let mut last_key: Option<(KeyCode, Instant)> = None;
+    // フレームレート制限: 目標 ~30fps = 33ms/frame
+    const FRAME_DURATION: Duration = Duration::from_millis(33);
+    let mut frame_start: Instant;
     
     loop {
+        frame_start = Instant::now();
         terminal.draw(|f| ui::draw_ui(f, &mut state))?;
 
         // 5秒間操作がなければ歌詞のスクロールをリセット
@@ -77,6 +86,11 @@ async fn main() -> Result<()> {
         while let Ok(event) = state.rx_media_events.try_recv() {
             match event {
                 MediaControlEvent::Play | MediaControlEvent::Pause | MediaControlEvent::Toggle => {
+                    if state.is_playing_video {
+                        state.is_playing_video = false;
+                        state.video_frame = None;
+                        if let Some(task) = video_task.take() { task.abort(); }
+                    }
                     if state.playing_id.is_some() {
                         state.is_paused = player::toggle_pause();
                         state.last_action = if state.is_paused { "⏸".into() } else { "▶".into() };
@@ -90,7 +104,7 @@ async fn main() -> Result<()> {
                         state.current += 1;
                         state.list_state.select(Some(state.current));
                         state.last_action = "⏭".into();
-                        play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone());
+                        play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone(), &mut video_task);
                     }
                 }
                 MediaControlEvent::Previous => {
@@ -98,7 +112,7 @@ async fn main() -> Result<()> {
                         state.current -= 1;
                         state.list_state.select(Some(state.current));
                         state.last_action = "⏮".into();
-                        play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone());
+                        play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone(), &mut video_task);
                     }
                 }
                 _ => {}
@@ -138,6 +152,8 @@ async fn main() -> Result<()> {
         while let Ok(art_data) = rx_album_art.try_recv() {
             if let Ok(img) = image::load_from_memory(&art_data) {
                 state.album_art = Some(img);
+                // アートが変わったのでprotocolキャッシュを無効化
+                state.album_art_protocol = None;
                 
                 // システム通知用に一時ファイルに保存
                 let temp_dir = std::env::temp_dir();
@@ -147,6 +163,10 @@ async fn main() -> Result<()> {
                     state.art_temp_path = Some(temp_path.to_string_lossy().to_string());
                 }
             }
+        }
+
+        while let Ok(frame) = rx_video_frame.try_recv() {
+            state.video_frame = Some(frame);
         }
 
         while let Ok(p) = rx_progress.try_recv() { state.load_progress = p; }
@@ -169,14 +189,46 @@ async fn main() -> Result<()> {
             }
         }
 
-        if event::poll(Duration::from_millis(10))? {
-            let ev = event::read()?;
-            match ev {
+        // フレームレート制限: 残り時間スリープ (ビジーループ防止)
+        let elapsed = frame_start.elapsed();
+        if elapsed < FRAME_DURATION {
+            let sleep_dur = FRAME_DURATION - elapsed;
+            // poll でイベント待機しながらスリープ (最大で残り時間)
+            if event::poll(sleep_dur)? {
+                let ev = event::read()?;
+                match ev {
                 Event::Key(key) => {
                     let now = Instant::now();
                     match state.input_mode {
                         InputMode::Normal => match key.code {
                             KeyCode::Char('v') => {
+                                if state.is_playing_video {
+                                    state.is_playing_video = false;
+                                    state.video_frame = None;
+                                    if let Some(task) = video_task.take() { task.abort(); }
+                                    state.last_action = "📜 Lyrics".into();
+                                } else {
+                                    let video_info = state.current_track().and_then(|t| {
+                                        t.video.as_ref().map(|v| v.clone())
+                                    });
+
+                                    if let Some(v_path) = video_info {
+                                        let url = video_url_from_path(&v_path);
+                                        
+                                        // Music -> Stop
+                                        player::pause();
+                                        state.is_paused = true;
+                                        
+                                        state.is_playing_video = true;
+                                        state.last_action = "🎬 Video Mode".into();
+                                        
+                                        if let Some(task) = video_task.take() { task.abort(); }
+                                        // Start from 0.0 as durations may differ
+                                        video_task = Some(spawn_video_task(url, 0.0, tx_video_frame.clone()));
+                                    }
+                                }
+                            }
+                            KeyCode::Char('V') => {
                                 let video_info = state.current_track().and_then(|t| {
                                     t.video.as_ref().map(|v| v.clone())
                                 });
@@ -185,7 +237,7 @@ async fn main() -> Result<()> {
                                     let url = video_url_from_path(&v_path);
                                     player::pause();
                                     state.is_paused = true;
-                                    state.last_action = "🎬".into();
+                                    state.last_action = "🎬 Ext Video (MPV)".into();
                                     
                                     let mut cmd = std::process::Command::new("mpv");
                                     cmd.arg("--ytdl=no");
@@ -238,16 +290,22 @@ async fn main() -> Result<()> {
                             KeyCode::Left => {
                                 let is_repeat = last_key.map_or(false, |(c, t)| c == KeyCode::Left && now.duration_since(t) < Duration::from_millis(200));
                                 if is_repeat { player::seek_relative(-5.0); state.last_action = "⏪".into(); }
-                                else if state.current > 0 { state.current -= 1; state.list_state.select(Some(state.current)); state.last_action = "⏮".into(); play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone()); }
+                                else if state.current > 0 { state.current -= 1; state.list_state.select(Some(state.current)); state.last_action = "⏮".into(); play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone(), &mut video_task); }
                                 last_key = Some((KeyCode::Left, now));
                             }
                             KeyCode::Right => {
                                 let is_repeat = last_key.map_or(false, |(c, t)| c == KeyCode::Right && now.duration_since(t) < Duration::from_millis(200));
                                 if is_repeat { player::seek_relative(5.0); state.last_action = "⏩".into(); }
-                                else if state.current < state.filtered_indices.len().saturating_sub(1) { state.current += 1; state.list_state.select(Some(state.current)); state.last_action = "⏭".into(); play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone()); }
+                                else if state.current < state.filtered_indices.len().saturating_sub(1) { state.current += 1; state.list_state.select(Some(state.current)); state.last_action = "⏭".into(); play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone(), &mut video_task); }
                                 last_key = Some((KeyCode::Right, now));
                             }
                             KeyCode::Enter | KeyCode::Char(' ') => {
+                                if state.is_playing_video {
+                                    state.is_playing_video = false;
+                                    state.video_frame = None;
+                                    if let Some(task) = video_task.take() { task.abort(); }
+                                }
+                                
                                 if key.code == KeyCode::Char(' ') && state.playing_id.is_some() {
                                     state.is_paused = player::toggle_pause();
                                     state.last_action = if state.is_paused { "⏸".into() } else { "▶".into() };
@@ -256,7 +314,7 @@ async fn main() -> Result<()> {
                                     }
                                 } else {
                                     state.last_action = "▶".into();
-                                    play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone());
+                                    play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone(), &mut video_task);
                                 }
                             }
                             _ => {}
@@ -278,7 +336,7 @@ async fn main() -> Result<()> {
                             // Check Buttons
                             if let Some(area) = state.prev_button_area {
                                 if col >= area.x && col < area.x + area.width && row == area.y {
-                                    if state.current > 0 { state.current -= 1; state.list_state.select(Some(state.current)); state.last_action = "⏮".into(); play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone()); }
+                                    if state.current > 0 { state.current -= 1; state.list_state.select(Some(state.current)); state.last_action = "⏮".into(); play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone(), &mut video_task); }
                                 }
                             }
                             if let Some(area) = state.play_button_area {
@@ -291,13 +349,13 @@ async fn main() -> Result<()> {
                                         }
                                     } else {
                                         state.last_action = "▶".into();
-                                        play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone());
+                                        play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone(), &mut video_task);
                                     }
                                 }
                             }
                             if let Some(area) = state.next_button_area {
                                 if col >= area.x && col < area.x + area.width && row == area.y {
-                                    if state.current < state.filtered_indices.len().saturating_sub(1) { state.current += 1; state.list_state.select(Some(state.current)); state.last_action = "⏭".into(); play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone()); }
+                                    if state.current < state.filtered_indices.len().saturating_sub(1) { state.current += 1; state.list_state.select(Some(state.current)); state.last_action = "⏭".into(); play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone(), &mut video_task); }
                                 }
                             }
 
@@ -344,9 +402,9 @@ async fn main() -> Result<()> {
                         _ => {}
                     }
                 }
-                _ => {}
-            }
-        }
+            } // match ev
+        } // if event::poll
+        } // if elapsed < FRAME_DURATION
 
         state.playback_pos = player::get_position();
         update_current_lyric(&mut state);
@@ -363,7 +421,7 @@ async fn main() -> Result<()> {
                         state.current = idx_in_filtered + 1;
                         state.list_state.select(Some(state.current));
                         state.last_action = "⏭".into();
-                        play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone());
+                        play_selected_track(&mut state, tx_lyrics.clone(), tx_player_status.clone(), tx_album_art.clone(), &mut video_task);
                     }
                 }
             }
@@ -379,8 +437,15 @@ fn play_selected_track(
     state: &mut AppState, 
     tx_lyrics: tokio::sync::mpsc::Sender<(String, Result<String>)>, 
     tx_status: tokio::sync::mpsc::Sender<String>,
-    tx_art: tokio::sync::mpsc::Sender<Vec<u8>>
+    tx_art: tokio::sync::mpsc::Sender<Vec<u8>>,
+    video_task: &mut Option<tokio::task::JoinHandle<()>>
 ) {
+    if state.is_playing_video {
+        state.is_playing_video = false;
+        state.video_frame = None;
+        if let Some(task) = video_task.take() { task.abort(); }
+    }
+    
     let (path, lrc_path, title, artist, album) = if let Some(t) = state.current_track() {
         (t.path.clone(), t.lrc.clone(), t.title.clone(), t.artist.clone(), t.album.clone())
     } else { return };
@@ -452,4 +517,78 @@ fn parse_lrc(lrc: &str) -> Vec<(f64, String)> {
     }
     result.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
     result
+}
+
+fn spawn_video_task(url: String, start_pos: f64, tx: tokio::sync::mpsc::Sender<DynamicImage>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        
+        let mut child = match tokio::process::Command::new("ffmpeg")
+            .kill_on_drop(true)
+            .args(&[
+                "-re",
+                "-thread_queue_size", "512", 
+                "-reconnect", "1",
+                "-reconnect_streamed", "1",
+                "-reconnect_delay_max", "2",
+                "-ss", &format!("{:.2}", start_pos),
+                "-i", &url,
+                // Video: TUI向けに解像度とfpsを抑える
+                "-map", "0:v:0",
+                "-vf", "scale=640:-1:flags=fast_bilinear", // TUIは640pで十分
+                "-f", "image2pipe",
+                "-vcodec", "mjpeg",
+                "-q:v", "5", // 生成負荷を軽減
+                "-r", "10",  // 30fps → 10fps (発熱の主因: TUIに30fpsは過剑)
+                "-tune", "zerolatency",
+                "-",
+                // Audio: ALSA
+                "-map", "0:a?",
+                "-af", "aresample=async=1000",
+                "-f", "alsa", "default"
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn() {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+
+        let mut stdout = child.stdout.take().unwrap();
+        let mut buffer = Vec::with_capacity(128 * 1024);
+        let mut tmp_buf = [0u8; 16384];
+
+        loop {
+            let n = match stdout.read(&mut tmp_buf).await {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(_) => break,
+            };
+            buffer.extend_from_slice(&tmp_buf[..n]);
+
+            // MJPEG parsing: Start of Image (FF D8) to End of Image (FF D9)
+            while let Some(start) = find_subsequence(&buffer, &[0xFF, 0xD8]) {
+                if start > 0 { buffer.drain(0..start); }
+                if let Some(end) = find_subsequence(&buffer, &[0xFF, 0xD9]) {
+                    let jpeg_data: Vec<_> = buffer.drain(0..end + 2).collect();
+                    if let Ok(img) = image::load_from_memory(&jpeg_data) {
+                        // try_send: バッファが満杯ならフレームをドロップ (ブロックしない)
+                        match tx.try_send(img) {
+                            Ok(_) => {}
+                            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                // バッファ満湱: フレームをスキップ
+                            }
+                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
+                        }
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+    })
+}
+
+fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|window| window == needle)
 }

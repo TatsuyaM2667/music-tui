@@ -6,6 +6,7 @@ use std::fs;
 use std::time::Instant;
 use image::DynamicImage;
 use ratatui_image::picker::Picker;
+use ratatui_image::protocol::StatefulProtocol;
 use souvlaki::{MediaControls, MediaControlEvent};
 use tokio::sync::mpsc;
 
@@ -25,6 +26,8 @@ pub struct AppState {
     pub current_lyric: String,
     pub parsed_lyrics: Vec<(f64, String)>,
     pub lyric_area: Option<Rect>,
+    pub video_area: Option<Rect>,
+    pub seek_bar_area: Option<Rect>,
     pub lyric_scroll_offset: i32,
     pub last_lyric_interaction: Instant,
     pub prev_button_area: Option<Rect>,
@@ -46,6 +49,10 @@ pub struct AppState {
     pub show_favorites_only: bool,
     pub volume: f32,
     pub album_art: Option<DynamicImage>,
+    /// キャッシュ済みアルバムアートprotocol (毎フレーム再生成を避けるため)
+    pub album_art_protocol: Option<Box<dyn StatefulProtocol>>,
+    pub video_frame: Option<DynamicImage>,
+    pub is_playing_video: bool,
     pub art_temp_path: Option<String>,
     pub picker: Option<Picker>,
     // Media controls for OS integration
@@ -92,6 +99,8 @@ impl AppState {
             current_lyric: "".into(),
             parsed_lyrics: vec![],
             lyric_area: None,
+            video_area: None,
+            seek_bar_area: None,
             lyric_scroll_offset: 0,
             last_lyric_interaction: Instant::now(),
             prev_button_area: None,
@@ -113,6 +122,9 @@ impl AppState {
             show_favorites_only: false,
             volume: 1.0,
             album_art: None,
+            album_art_protocol: None,
+            video_frame: None,
+            is_playing_video: false,
             art_temp_path: None,
             picker,
             media_controls,
