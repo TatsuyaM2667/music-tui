@@ -63,7 +63,7 @@ async fn main() -> Result<()> {
     let (tx_lyrics, mut rx_lyrics) = tokio::sync::mpsc::channel::<(String, Result<String>)>(10);
     let (tx_player_status, mut rx_player_status) = tokio::sync::mpsc::channel::<String>(10);
     let (tx_album_art, mut rx_album_art) = tokio::sync::mpsc::channel::<Vec<u8>>(10);
-    let (tx_video_frame, mut rx_video_frame) = tokio::sync::mpsc::channel::<crate::renderer::OdinVideoFrame>(30);
+    let (tx_video_frame, mut rx_video_frame) = tokio::sync::mpsc::channel::<(Vec<u8>, u32, u32)>(30);
 
     let mut video_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut video_frame_count: u64 = 0;
@@ -88,7 +88,8 @@ async fn main() -> Result<()> {
                 MediaControlEvent::Play | MediaControlEvent::Pause | MediaControlEvent::Toggle => {
                     if state.is_playing_video {
                         state.is_playing_video = false;
-                        state.video_frame = None;
+                        state.video_rgb = None;
+                        state.video_cells = None;
                         if let Some(task) = video_task.take() { task.abort(); }
                     }
                     if state.playing_id.is_some() {
@@ -170,8 +171,9 @@ async fn main() -> Result<()> {
             }
         }
 
-        while let Ok(frame) = rx_video_frame.try_recv() {
-            state.video_frame = Some(frame);
+        while let Ok((pixels, w, h)) = rx_video_frame.try_recv() {
+            state.video_rgb = Some((pixels, w, h));
+            state.video_frame_dirty = true;
             video_frame_count += 1;
             if state.is_playing_video {
                 state.video_playback_pos = video_frame_count as f64 / 15.0;
@@ -220,7 +222,8 @@ async fn main() -> Result<()> {
                             KeyCode::Char('v') => {
                                 if state.is_playing_video {
                                     state.is_playing_video = false;
-                                    state.video_frame = None;
+                                    state.video_rgb = None;
+                                    state.video_cells = None;
                                     if let Some(task) = video_task.take() { task.abort(); }
                                     state.last_action = "📜 Lyrics".into();
                                     
@@ -247,7 +250,7 @@ async fn main() -> Result<()> {
                                         // Start from 0.0 as durations may differ
                                         video_frame_count = 0;
                                         state.video_playback_pos = 0.0;
-                                        video_task = Some(spawn_video_task(url, 0.0, tx_video_frame.clone(), state.video_area_size.clone()));
+                                        video_task = Some(spawn_video_task(url, 0.0, tx_video_frame.clone()));
                                     }
                                 }
                             }
@@ -433,7 +436,8 @@ async fn main() -> Result<()> {
                             KeyCode::Enter => {
                                 if state.is_playing_video {
                                     state.is_playing_video = false;
-                                    state.video_frame = None;
+                                    state.video_rgb = None;
+                                    state.video_cells = None;
                                     if let Some(task) = video_task.take() { task.abort(); }
                                 }
                                 
@@ -474,7 +478,8 @@ async fn main() -> Result<()> {
                             KeyCode::Char(' ') => {
                                 if state.is_playing_video {
                                     state.is_playing_video = false;
-                                    state.video_frame = None;
+                                    state.video_rgb = None;
+                                    state.video_cells = None;
                                     if let Some(task) = video_task.take() { task.abort(); }
                                 }
                                 
@@ -690,7 +695,8 @@ fn play_selected_track(
 ) {
     if state.is_playing_video {
         state.is_playing_video = false;
-        state.video_frame = None;
+        state.video_rgb = None;
+        state.video_cells = None;
         if let Some(task) = video_task.take() { task.abort(); }
     }
     
@@ -770,8 +776,7 @@ fn parse_lrc(lrc: &str) -> Vec<(f64, String)> {
 fn spawn_video_task(
     url: String, 
     start_pos: f64, 
-    tx: tokio::sync::mpsc::Sender<crate::renderer::OdinVideoFrame>, 
-    video_area_size: std::sync::Arc<std::sync::RwLock<(u16, u16)>>
+    tx: tokio::sync::mpsc::Sender<(Vec<u8>, u32, u32)>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         use tokio::io::AsyncReadExt;
@@ -821,39 +826,17 @@ fn spawn_video_task(
         let mut stdout = video_child.stdout.take().unwrap();
         let frame_size = 320 * 180 * 3;
 
-        // Use a small bounded channel to allow the render thread to drop stale frames
-        let (raw_tx, mut raw_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(3);
-
-        // Odin FFI rendering on a dedicated blocking thread
-        tokio::task::spawn_blocking(move || {
-            while let Some(frame_buf) = raw_rx.blocking_recv() {
-                let size = *video_area_size.read().unwrap();
-                if let Some(frame) = crate::renderer::render_raw_rgb_to_cells(&frame_buf, 320, 180, size.0, size.1) {
-                    match tx.try_send(frame) {
-                        Ok(_) => {}
-                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
-                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
-                    }
-                }
-            }
-        });
-
-        // Read frames at native rate; bounded channel naturally drops stale frames
+        // Send raw RGB frames; bounded channel drops stale frames
         loop {
             let mut frame_buf = vec![0u8; frame_size];
             if stdout.read_exact(&mut frame_buf).await.is_err() {
                 break;
             }
-            // If render thread is busy, drop this frame (send fails on full channel)
-            match raw_tx.try_send(frame_buf) {
+            match tx.try_send((frame_buf, 320, 180)) {
                 Ok(_) => {}
                 Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
                 Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
             }
         }
     })
-}
-
-fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|window| window == needle)
 }

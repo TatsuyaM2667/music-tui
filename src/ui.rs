@@ -1,9 +1,9 @@
+use crate::state::{ActivePane, AppState, ContentView, InputMode, MenuSelection};
 use ratatui::{
     prelude::*,
-    widgets::{Paragraph, Block, Borders, List, ListItem, Wrap},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
 use ratatui_image::Image;
-use crate::state::{AppState, InputMode, ActivePane, MenuSelection, ContentView};
 
 pub fn draw_ui(frame: &mut Frame, state: &mut AppState) {
     let size = frame.area();
@@ -13,9 +13,9 @@ pub fn draw_ui(frame: &mut Frame, state: &mut AppState) {
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(0),      // Player
+            Constraint::Min(0),                                   // Player
             Constraint::Length(if is_vertical { 8 } else { 12 }), // Playlist area
-            Constraint::Length(1),   // Help Footer
+            Constraint::Length(1),                                // Help Footer
         ])
         .split(size);
 
@@ -32,8 +32,8 @@ fn render_player_area(frame: &mut Frame, state: &mut AppState, area: Rect, is_ve
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(0),     // Art/Info & Lyrics
-            Constraint::Length(3),  // Controls
+            Constraint::Min(0),    // Art/Info & Lyrics
+            Constraint::Length(3), // Controls
         ])
         .split(area);
 
@@ -42,11 +42,11 @@ fn render_player_area(frame: &mut Frame, state: &mut AppState, area: Rect, is_ve
         let vertical_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(10),  // Art & Info (高さを固定して確保)
+                Constraint::Length(10), // Art & Info (高さを固定して確保)
                 Constraint::Min(0),     // Lyrics
             ])
             .split(chunks[0]);
-        
+
         // アートと情報を「横並び」に配置 (ご要望: 右横に大きく配置)
         let art_info_chunks = Layout::default()
             .direction(Direction::Horizontal)
@@ -58,14 +58,19 @@ fn render_player_area(frame: &mut Frame, state: &mut AppState, area: Rect, is_ve
 
         render_art(frame, state, art_info_chunks[0]);
         render_large_info(frame, state, art_info_chunks[1]);
-        
-        let lyric_block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Rgb(60, 60, 60))).title(" Lyrics ");
+
+        let lyric_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Rgb(60, 60, 60)))
+            .title(" Lyrics ");
         frame.render_widget(lyric_block, vertical_chunks[1]);
-        let lyric_inner = vertical_chunks[1].inner(Margin { horizontal: 1, vertical: 1 });
+        let lyric_inner = vertical_chunks[1].inner(Margin {
+            horizontal: 1,
+            vertical: 1,
+        });
         state.lyric_area = Some(lyric_inner);
         state.video_area = Some(lyric_inner);
         render_lyrics(frame, state, lyric_inner);
-
     } else {
         // --- 横長（通常）レイアウト ---
         let top_chunks = Layout::default()
@@ -79,17 +84,23 @@ fn render_player_area(frame: &mut Frame, state: &mut AppState, area: Rect, is_ve
         let left_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Min(0),     // Art
-                Constraint::Length(6),  // Info
+                Constraint::Min(0),    // Art
+                Constraint::Length(6), // Info
             ])
             .split(top_chunks[0]);
 
         render_art(frame, state, left_chunks[0]);
         render_large_info(frame, state, left_chunks[1]);
 
-        let lyric_block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Rgb(60, 60, 60))).title(" Lyrics ");
+        let lyric_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Rgb(60, 60, 60)))
+            .title(" Lyrics ");
         frame.render_widget(lyric_block, top_chunks[1]);
-        let lyric_inner = top_chunks[1].inner(Margin { horizontal: 1, vertical: 1 });
+        let lyric_inner = top_chunks[1].inner(Margin {
+            horizontal: 1,
+            vertical: 1,
+        });
         state.lyric_area = Some(lyric_inner);
         state.video_area = Some(lyric_inner);
         render_lyrics(frame, state, lyric_inner);
@@ -104,15 +115,24 @@ fn render_art(frame: &mut Frame, state: &mut AppState, area: Rect) {
         .border_style(Style::default().fg(Color::Rgb(60, 60, 60)))
         .title(" Art ");
     frame.render_widget(art_block, area);
-    
-    let art_inner = area.inner(Margin { horizontal: 1, vertical: 1 });
+
+    let art_inner = area.inner(Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
     if state.album_art.is_some() {
         if let Some(picker) = &state.picker {
             // protocolが未生成またはエリア変更の場合のみ再生成
             if state.album_art_protocol.is_none() {
                 if let Some(img) = &state.album_art {
-                    match picker.new_protocol(img.clone(), art_inner, ratatui_image::Resize::Fit(None)) {
-                        Ok(protocol) => { state.album_art_protocol = Some(protocol); }
+                    match picker.new_protocol(
+                        img.clone(),
+                        art_inner,
+                        ratatui_image::Resize::Fit(None),
+                    ) {
+                        Ok(protocol) => {
+                            state.album_art_protocol = Some(protocol);
+                        }
                         Err(_) => {}
                     }
                 }
@@ -125,15 +145,18 @@ fn render_art(frame: &mut Frame, state: &mut AppState, area: Rect) {
         }
     }
     frame.render_widget(
-        Paragraph::new("\n 🎵").alignment(Alignment::Center).style(Style::default().fg(Color::DarkGray)),
-        art_inner
+        Paragraph::new("\n 🎵")
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::DarkGray)),
+        art_inner,
     );
 }
 
 fn render_large_info(frame: &mut Frame, state: &AppState, area: Rect) {
-    let playing_track = state.playing_id.as_ref().and_then(|path| {
-        state.tracks.iter().find(|t| &t.path == path)
-    });
+    let playing_track = state
+        .playing_id
+        .as_ref()
+        .and_then(|path| state.tracks.iter().find(|t| &t.path == path));
 
     let info_block = Block::default()
         .borders(Borders::ALL)
@@ -142,12 +165,19 @@ fn render_large_info(frame: &mut Frame, state: &AppState, area: Rect) {
 
     if let Some(t) = playing_track {
         let video_icon = if t.video.is_some() { " 🎬" } else { "" };
-        let fav_icon = if state.favorites.contains(&t.path) { " ⭐" } else { "" };
+        let fav_icon = if state.favorites.contains(&t.path) {
+            " ⭐"
+        } else {
+            ""
+        };
 
         let info_text = vec![
-            Line::from(vec![
-                Span::styled(format!("{}{}{}", t.title, video_icon, fav_icon), Style::default().add_modifier(Modifier::BOLD).fg(Color::White)),
-            ]),
+            Line::from(vec![Span::styled(
+                format!("{}{}{}", t.title, video_icon, fav_icon),
+                Style::default()
+                    .add_modifier(Modifier::BOLD)
+                    .fg(Color::White),
+            )]),
             Line::from(""),
             Line::from(vec![
                 Span::styled("Artist: ", Style::default().fg(Color::DarkGray)),
@@ -163,7 +193,7 @@ fn render_large_info(frame: &mut Frame, state: &AppState, area: Rect) {
                 .block(info_block)
                 .wrap(Wrap { trim: true })
                 .alignment(Alignment::Left),
-            area
+            area,
         );
     } else {
         frame.render_widget(info_block, area);
@@ -180,20 +210,29 @@ fn render_controls(frame: &mut Frame, state: &mut AppState, area: Rect) {
         ])
         .split(area);
 
-    let playing_track = state.playing_id.as_ref().and_then(|path| {
-        state.tracks.iter().find(|t| &t.path == path)
-    });
+    let playing_track = state
+        .playing_id
+        .as_ref()
+        .and_then(|path| state.tracks.iter().find(|t| &t.path == path));
 
     if let Some(t) = playing_track {
-        let pos = if state.is_playing_video { state.video_playback_pos } else { state.playback_pos };
+        let pos = if state.is_playing_video {
+            state.video_playback_pos
+        } else {
+            state.playback_pos
+        };
         let track_duration = t.duration.max(1.0);
-        let duration = if state.is_playing_video && state.video_duration > 0.0 { state.video_duration } else { track_duration };
+        let duration = if state.is_playing_video && state.video_duration > 0.0 {
+            state.video_duration
+        } else {
+            track_duration
+        };
         let percent = ((pos / duration) * 100.0).min(100.0) as u16;
-        
+
         // --- 可視化された再生バー ---
         let seek_bar_area = chunks[0];
         state.seek_bar_area = Some(seek_bar_area);
-        
+
         let symbols = [" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉", "█"];
         let width = seek_bar_area.width as usize;
         let filled_width = (width * percent as usize) / 100;
@@ -211,22 +250,35 @@ fn render_controls(frame: &mut Frame, state: &mut AppState, area: Rect) {
             }
         }
 
-        let progress_label = format!(" {:.0}:{:02} / {:.0}:{:02} ", pos / 60.0, (pos as i32) % 60, duration / 60.0, (duration as i32) % 60);
-        
+        let progress_label = format!(
+            " {:.0}:{:02} / {:.0}:{:02} ",
+            pos / 60.0,
+            (pos as i32) % 60,
+            duration / 60.0,
+            (duration as i32) % 60
+        );
+
         frame.render_widget(
-            Paragraph::new(bar_str).style(Style::default().fg(Color::Cyan).bg(Color::Rgb(30, 30, 30))),
-            seek_bar_area
+            Paragraph::new(bar_str)
+                .style(Style::default().fg(Color::Cyan).bg(Color::Rgb(30, 30, 30))),
+            seek_bar_area,
         );
         frame.render_widget(
-            Paragraph::new(progress_label).alignment(Alignment::Right).style(Style::default().fg(Color::White)),
-            seek_bar_area
+            Paragraph::new(progress_label)
+                .alignment(Alignment::Right)
+                .style(Style::default().fg(Color::White)),
+            seek_bar_area,
         );
 
         // --- ボタン ---
         let btn_area = chunks[1];
         let center_x = btn_area.x + btn_area.width / 2;
         let prev_btn = " [⏮ Prev] ";
-        let play_btn = if state.is_paused { " [▶ Play] " } else { " [⏸ Pause] " };
+        let play_btn = if state.is_paused {
+            " [▶ Play] "
+        } else {
+            " [⏸ Pause] "
+        };
         let next_btn = " [⏭ Next] ";
 
         let prev_rect = Rect::new(center_x.saturating_sub(15), btn_area.y, 11, 1);
@@ -237,90 +289,88 @@ fn render_controls(frame: &mut Frame, state: &mut AppState, area: Rect) {
         state.play_button_area = Some(play_rect);
         state.next_button_area = Some(next_rect);
 
-        frame.render_widget(Paragraph::new(prev_btn).style(Style::default().fg(Color::White)), prev_rect);
-        frame.render_widget(Paragraph::new(play_btn).style(Style::default().fg(if state.is_paused { Color::Yellow } else { Color::Green })), play_rect);
-        frame.render_widget(Paragraph::new(next_btn).style(Style::default().fg(Color::White)), next_rect);
+        frame.render_widget(
+            Paragraph::new(prev_btn).style(Style::default().fg(Color::White)),
+            prev_rect,
+        );
+        frame.render_widget(
+            Paragraph::new(play_btn).style(Style::default().fg(if state.is_paused {
+                Color::Yellow
+            } else {
+                Color::Green
+            })),
+            play_rect,
+        );
+        frame.render_widget(
+            Paragraph::new(next_btn).style(Style::default().fg(Color::White)),
+            next_rect,
+        );
     }
 }
 
-pub struct OdinVideoWidget<'a> {
-    frame: &'a crate::renderer::OdinVideoFrame,
-}
+fn render_lyrics(frame: &mut ratatui::Frame, state: &mut AppState, area: Rect) {
+    if state.is_playing_video {
+        // Try cached braille cells first
+        if let Some(cells) = &state.video_cells {
+            if state.video_cell_area == Some(area) && !state.video_frame_dirty {
+                crate::renderer::render_braille_cells(frame, cells, area.width as u32, area.height as u32, area);
+                return;
+            }
+        }
 
-impl<'a> OdinVideoWidget<'a> {
-    pub fn new(frame: &'a crate::renderer::OdinVideoFrame) -> Self {
-        Self { frame }
-    }
-}
-
-impl<'a> ratatui::widgets::Widget for OdinVideoWidget<'a> {
-    fn render(self, area: ratatui::layout::Rect, buf: &mut ratatui::prelude::Buffer) {
-        let frame = self.frame;
-
-        let render_w = std::cmp::min(area.width, frame.width);
-        let render_h = std::cmp::min(area.height, frame.height);
-
-        let start_x = area.x + (area.width.saturating_sub(render_w)) / 2;
-        let start_y = area.y + (area.height.saturating_sub(render_h)) / 2;
-
-        let data = &frame.data;
-
-        for y in 0..render_h {
-            for x in 0..render_w {
-                let idx = ((y as usize) * (frame.width as usize) + (x as usize)) * 8;
-                if idx + 7 < data.len() {
-                    let char_code = u32::from_le_bytes([data[idx], data[idx+1], data[idx+2], data[idx+3]]);
-                    let r = data[idx + 4];
-                    let g = data[idx + 5];
-                    let b = data[idx + 6];
-
-                    if let Some(cell) = buf.cell_mut((start_x + x, start_y + y)) {
-                        if let Some(c) = char::from_u32(char_code) {
-                            cell.set_char(c);
-                            cell.set_fg(ratatui::style::Color::Rgb(r, g, b));
-                            cell.set_bg(ratatui::style::Color::Black);
-                        }
-                    }
+        // Re-render from raw RGB data
+        if let Some((pixels, w, h)) = state.video_rgb.take() {
+            let cell_w = area.width as u32;
+            let cell_h = area.height as u32;
+            if cell_w > 0 && cell_h > 0 {
+                if let Some(cells) = crate::renderer::render_braille(&pixels, w, h, cell_w, cell_h) {
+                    state.video_cells = Some(cells.clone());
+                    state.video_cell_area = Some(area);
+                    state.video_frame_dirty = false;
+                    crate::renderer::render_braille_cells(frame, &cells, cell_w, cell_h, area);
+                    return;
                 }
             }
-        }
-    }
-}
-
-fn render_lyrics(frame: &mut ratatui::Frame, state: &AppState, area: Rect) {
-    if state.is_playing_video {
-        if let Ok(mut size) = state.video_area_size.write() {
-            if *size != (area.width, area.height) {
-                *size = (area.width, area.height);
-            }
+            // Put it back if rendering failed
+            state.video_rgb = Some((pixels, w, h));
         }
 
-        if let Some(img) = &state.video_frame {
-            let widget = OdinVideoWidget::new(img);
-            frame.render_widget(widget, area);
-            return;
-        }
-        frame.render_widget(Paragraph::new("🎬 Loading video...").alignment(Alignment::Center), area);
+        frame.render_widget(
+            Paragraph::new("🎬 Loading video...").alignment(Alignment::Center),
+            area,
+        );
         return;
     }
 
     if state.parsed_lyrics.is_empty() {
-        frame.render_widget(Paragraph::new(state.current_lyric.clone()).alignment(Alignment::Center), area);
+        frame.render_widget(
+            Paragraph::new(state.current_lyric.clone()).alignment(Alignment::Center),
+            area,
+        );
         return;
     }
 
     let pos = state.playback_pos;
     let mut current_idx = 0;
     for (i, (time, _)) in state.parsed_lyrics.iter().enumerate() {
-        if pos >= *time { current_idx = i; } else { break; }
+        if pos >= *time {
+            current_idx = i;
+        } else {
+            break;
+        }
     }
 
     let h = area.height as i32;
     let center_line = h / 2;
-    
+
     if state.lyric_scroll_offset != 0 {
         let indicator = format!(" 📜 Scrolling ({:+} lines) ", -state.lyric_scroll_offset);
-        frame.render_widget(Paragraph::new(indicator).style(Style::default().fg(Color::Yellow)).alignment(Alignment::Right), area);
+        frame.render_widget(
+            Paragraph::new(indicator)
+                .style(Style::default().fg(Color::Yellow))
+                .alignment(Alignment::Right),
+            area,
+        );
     }
 
     for (i, (_time, text)) in state.parsed_lyrics.iter().enumerate() {
@@ -330,7 +380,9 @@ fn render_lyrics(frame: &mut ratatui::Frame, state: &AppState, area: Rect) {
         if y >= 0 && y < h {
             let mut style = Style::default().fg(Color::Rgb(100, 100, 100));
             if i == current_idx {
-                style = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
+                style = Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD);
             } else if i < current_idx {
                 style = Style::default().fg(Color::Rgb(60, 60, 60));
             }
@@ -341,7 +393,12 @@ fn render_lyrics(frame: &mut ratatui::Frame, state: &AppState, area: Rect) {
                 width: area.width,
                 height: 1,
             };
-            frame.render_widget(Paragraph::new(text.as_str()).alignment(Alignment::Center).style(style), line_area);
+            frame.render_widget(
+                Paragraph::new(text.as_str())
+                    .alignment(Alignment::Center)
+                    .style(style),
+                line_area,
+            );
         }
     }
 }
@@ -362,46 +419,60 @@ fn render_playlist_and_search(frame: &mut Frame, state: &AppState, area: Rect) {
 
 fn render_menu(frame: &mut Frame, state: &AppState, area: Rect) {
     let is_focused = matches!(state.active_pane, ActivePane::Menu);
-    let border_color = if is_focused { Color::Cyan } else { Color::Rgb(50, 50, 50) };
+    let border_color = if is_focused {
+        Color::Cyan
+    } else {
+        Color::Rgb(50, 50, 50)
+    };
     let title_style = if is_focused {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
 
-    let items: Vec<ListItem> = MenuSelection::ALL.iter().enumerate().map(|(i, sel)| {
-        let is_selected = state.menu_state.selected() == Some(i);
-        let mut style = Style::default().fg(Color::Rgb(140, 140, 140));
-        if is_selected && is_focused {
-            style = style.fg(Color::Cyan).bg(Color::Rgb(30, 50, 70)).add_modifier(Modifier::BOLD);
-        } else if is_selected {
-            style = style.fg(Color::White).bg(Color::Rgb(40, 40, 50));
-        }
-        let prefix = if is_selected { "▸ " } else { "  " };
-        ListItem::new(format!("{}{}", prefix, sel.label())).style(style)
-    }).collect();
+    let items: Vec<ListItem> = MenuSelection::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, sel)| {
+            let is_selected = state.menu_state.selected() == Some(i);
+            let mut style = Style::default().fg(Color::Rgb(140, 140, 140));
+            if is_selected && is_focused {
+                style = style
+                    .fg(Color::Cyan)
+                    .bg(Color::Rgb(30, 50, 70))
+                    .add_modifier(Modifier::BOLD);
+            } else if is_selected {
+                style = style.fg(Color::White).bg(Color::Rgb(40, 40, 50));
+            }
+            let prefix = if is_selected { "▸ " } else { "  " };
+            ListItem::new(format!("{}{}", prefix, sel.label())).style(style)
+        })
+        .collect();
 
     let menu_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(" Menu ", title_style));
 
-    frame.render_widget(
-        List::new(items).block(menu_block),
-        area,
-    );
+    frame.render_widget(List::new(items).block(menu_block), area);
 }
 
 fn render_content(frame: &mut Frame, state: &AppState, area: Rect) {
     let is_focused = matches!(state.active_pane, ActivePane::Content);
-    let border_color = if is_focused { Color::Cyan } else { Color::Rgb(50, 50, 50) };
+    let border_color = if is_focused {
+        Color::Cyan
+    } else {
+        Color::Rgb(50, 50, 50)
+    };
 
     // Split content area into list + search bar
     let content_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(0),      // List
-            Constraint::Length(3),    // Search
+            Constraint::Min(0),    // List
+            Constraint::Length(3), // Search
         ])
         .split(area);
 
@@ -418,28 +489,38 @@ fn render_content(frame: &mut Frame, state: &AppState, area: Rect) {
         }
         ContentView::ArtistList => {
             let title = format!(" 👤 Artists ({}) ", state.filtered_artist_list.len());
-            let items: Vec<ListItem> = state.filtered_artist_list.iter().enumerate().map(|(i, artist)| {
-                let is_selected = state.content_current == i;
-                let track_count = state.tracks.iter().filter(|t| &t.artist == artist).count();
-                let mut style = Style::default().fg(Color::Rgb(140, 140, 140));
-                if is_selected && is_focused {
-                    style = style.fg(Color::White).bg(Color::Rgb(40, 40, 80));
-                }
-                ListItem::new(format!("  {} ({} tracks)", artist, track_count)).style(style)
-            }).collect();
+            let items: Vec<ListItem> = state
+                .filtered_artist_list
+                .iter()
+                .enumerate()
+                .map(|(i, artist)| {
+                    let is_selected = state.content_current == i;
+                    let track_count = state.tracks.iter().filter(|t| &t.artist == artist).count();
+                    let mut style = Style::default().fg(Color::Rgb(140, 140, 140));
+                    if is_selected && is_focused {
+                        style = style.fg(Color::White).bg(Color::Rgb(40, 40, 80));
+                    }
+                    ListItem::new(format!("  {} ({} tracks)", artist, track_count)).style(style)
+                })
+                .collect();
             (title, items)
         }
         ContentView::AlbumList => {
             let title = format!(" 💿 Albums ({}) ", state.filtered_album_list.len());
-            let items: Vec<ListItem> = state.filtered_album_list.iter().enumerate().map(|(i, album)| {
-                let is_selected = state.content_current == i;
-                let track_count = state.tracks.iter().filter(|t| &t.album == album).count();
-                let mut style = Style::default().fg(Color::Rgb(140, 140, 140));
-                if is_selected && is_focused {
-                    style = style.fg(Color::White).bg(Color::Rgb(40, 40, 80));
-                }
-                ListItem::new(format!("  {} ({} tracks)", album, track_count)).style(style)
-            }).collect();
+            let items: Vec<ListItem> = state
+                .filtered_album_list
+                .iter()
+                .enumerate()
+                .map(|(i, album)| {
+                    let is_selected = state.content_current == i;
+                    let track_count = state.tracks.iter().filter(|t| &t.album == album).count();
+                    let mut style = Style::default().fg(Color::Rgb(140, 140, 140));
+                    if is_selected && is_focused {
+                        style = style.fg(Color::White).bg(Color::Rgb(40, 40, 80));
+                    }
+                    ListItem::new(format!("  {} ({} tracks)", album, track_count)).style(style)
+                })
+                .collect();
             (title, items)
         }
         ContentView::ArtistTracks(artist) => {
@@ -461,15 +542,19 @@ fn render_content(frame: &mut Frame, state: &AppState, area: Rect) {
             let title = format!(" 📁 Playlists ({}) ", state.playlists.len());
             let mut pl_names: Vec<&String> = state.playlists.keys().collect();
             pl_names.sort();
-            let items: Vec<ListItem> = pl_names.iter().enumerate().map(|(i, &name)| {
-                let is_selected = state.content_current == i;
-                let track_count = state.playlists.get(name).map_or(0, |v| v.len());
-                let mut style = Style::default().fg(Color::Rgb(140, 140, 140));
-                if is_selected && is_focused {
-                    style = style.fg(Color::White).bg(Color::Rgb(40, 40, 80));
-                }
-                ListItem::new(format!("  {} ({} tracks)", name, track_count)).style(style)
-            }).collect();
+            let items: Vec<ListItem> = pl_names
+                .iter()
+                .enumerate()
+                .map(|(i, &name)| {
+                    let is_selected = state.content_current == i;
+                    let track_count = state.playlists.get(name).map_or(0, |v| v.len());
+                    let mut style = Style::default().fg(Color::Rgb(140, 140, 140));
+                    if is_selected && is_focused {
+                        style = style.fg(Color::White).bg(Color::Rgb(40, 40, 80));
+                    }
+                    ListItem::new(format!("  {} ({} tracks)", name, track_count)).style(style)
+                })
+                .collect();
             (title, items)
         }
         ContentView::PlaylistTracks(name) => {
@@ -485,7 +570,9 @@ fn render_content(frame: &mut Frame, state: &AppState, area: Rect) {
         .title(Span::styled(
             title,
             if is_focused {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::DarkGray)
             },
@@ -499,34 +586,67 @@ fn render_content(frame: &mut Frame, state: &AppState, area: Rect) {
     );
 
     // Search bar
-    let search_label = if matches!(state.input_mode, InputMode::Editing) { " Searching... " } else { " Search [/] " };
-    let search_style = if matches!(state.input_mode, InputMode::Editing) { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::DarkGray) };
+    let search_label = if matches!(state.input_mode, InputMode::Editing) {
+        " Searching... "
+    } else {
+        " Search [/] "
+    };
+    let search_style = if matches!(state.input_mode, InputMode::Editing) {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
     frame.render_widget(
         Paragraph::new(format!(" > {} ", state.search))
-            .block(Block::default().borders(Borders::ALL).title(search_label).border_style(search_style))
-            .style(if matches!(state.input_mode, InputMode::Editing) { Style::default().fg(Color::White) } else { Style::default().fg(Color::Gray) }),
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(search_label)
+                    .border_style(search_style),
+            )
+            .style(if matches!(state.input_mode, InputMode::Editing) {
+                Style::default().fg(Color::White)
+            } else {
+                Style::default().fg(Color::Gray)
+            }),
         content_chunks[1],
     );
 }
 
 fn build_track_list_items(state: &AppState) -> Vec<ListItem<'static>> {
-    state.filtered_indices.iter().enumerate().map(|(i, &idx)| {
-        let track = &state.tracks[idx];
-        let is_selected = i == state.content_current;
-        let is_playing = state.playing_id.as_ref().map_or(false, |id| id == &track.path);
-        let is_fav = state.favorites.contains(&track.path);
+    state
+        .filtered_indices
+        .iter()
+        .enumerate()
+        .map(|(i, &idx)| {
+            let track = &state.tracks[idx];
+            let is_selected = i == state.content_current;
+            let is_playing = state
+                .playing_id
+                .as_ref()
+                .map_or(false, |id| id == &track.path);
+            let is_fav = state.favorites.contains(&track.path);
 
-        let video_indicator = if track.video.is_some() { " 🎬" } else { "" };
-        let fav_indicator = if is_fav { " ⭐" } else { "" };
+            let video_indicator = if track.video.is_some() { " 🎬" } else { "" };
+            let fav_indicator = if is_fav { " ⭐" } else { "" };
 
-        let mut style = Style::default().fg(Color::Rgb(140, 140, 140));
-        let is_focused = matches!(state.active_pane, ActivePane::Content);
-        if is_selected && is_focused { style = style.bg(Color::Rgb(40, 40, 80)).fg(Color::White); }
-        if is_playing { style = style.fg(Color::Cyan); }
+            let mut style = Style::default().fg(Color::Rgb(140, 140, 140));
+            let is_focused = matches!(state.active_pane, ActivePane::Content);
+            if is_selected && is_focused {
+                style = style.bg(Color::Rgb(40, 40, 80)).fg(Color::White);
+            }
+            if is_playing {
+                style = style.fg(Color::Cyan);
+            }
 
-        let prefix = if is_playing { "▶ " } else { "  " };
-        ListItem::new(format!("{}{} - {}{}{}", prefix, track.title, track.artist, video_indicator, fav_indicator)).style(style)
-    }).collect()
+            let prefix = if is_playing { "▶ " } else { "  " };
+            ListItem::new(format!(
+                "{}{} - {}{}{}",
+                prefix, track.title, track.artist, video_indicator, fav_indicator
+            ))
+            .style(style)
+        })
+        .collect()
 }
 
 fn render_help(frame: &mut Frame, state: &AppState, area: Rect) {
@@ -540,8 +660,18 @@ fn render_help(frame: &mut Frame, state: &AppState, area: Rect) {
             Constraint::Length(action_text.len() as u16),
         ])
         .split(area);
-    frame.render_widget(Paragraph::new(help_text).style(Style::default().fg(Color::Rgb(80, 80, 80))), help_chunks[0]);
-    frame.render_widget(Paragraph::new(action_text).style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)), help_chunks[1]);
+    frame.render_widget(
+        Paragraph::new(help_text).style(Style::default().fg(Color::Rgb(80, 80, 80))),
+        help_chunks[0],
+    );
+    frame.render_widget(
+        Paragraph::new(action_text).style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        help_chunks[1],
+    );
 }
 
 fn render_playlist_popup(frame: &mut Frame, state: &AppState, area: Rect) {
@@ -566,7 +696,10 @@ fn render_playlist_popup(frame: &mut Frame, state: &AppState, area: Rect) {
         .margin(1)
         .split(inner_area);
 
-    let track_title = state.current_track().map(|t| t.title.as_str()).unwrap_or("Unknown");
+    let track_title = state
+        .current_track()
+        .map(|t| t.title.as_str())
+        .unwrap_or("Unknown");
     let info_text = Paragraph::new(format!("Adding track: {}", track_title))
         .style(Style::default().fg(Color::Gray));
     frame.render_widget(info_text, chunks[0]);
