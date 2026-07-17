@@ -59,6 +59,8 @@ pub struct AppState {
     pub media_controls: Option<MediaControls>,
     pub rx_media_events: mpsc::Receiver<MediaControlEvent>,
     pub video_area_size: std::sync::Arc<std::sync::RwLock<(u16, u16)>>,
+    pub video_playback_pos: f64,
+    pub video_duration: f64,
 }
 
 impl AppState {
@@ -131,6 +133,8 @@ impl AppState {
             media_controls,
             rx_media_events: rx,
             video_area_size: std::sync::Arc::new(std::sync::RwLock::new((80, 24))),
+            video_playback_pos: 0.0,
+            video_duration: 0.0,
         }
     }
 

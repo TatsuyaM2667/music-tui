@@ -65,6 +65,7 @@ async fn main() -> Result<()> {
     let (tx_video_frame, mut rx_video_frame) = tokio::sync::mpsc::channel::<crate::renderer::OdinVideoFrame>(30);
 
     let mut video_task: Option<tokio::task::JoinHandle<()>> = None;
+    let mut video_frame_count: u64 = 0;
     let mut last_tick = Instant::now();
     let mut last_key: Option<(KeyCode, Instant)> = None;
     // フレームレート制限: 目標 ~30fps = 33ms/frame
@@ -165,6 +166,10 @@ async fn main() -> Result<()> {
 
         while let Ok(frame) = rx_video_frame.try_recv() {
             state.video_frame = Some(frame);
+            video_frame_count += 1;
+            if state.is_playing_video {
+                state.video_playback_pos = video_frame_count as f64 / 15.0;
+            }
         }
 
         while let Ok(p) = rx_progress.try_recv() { state.load_progress = p; }
@@ -222,6 +227,8 @@ async fn main() -> Result<()> {
                                         
                                         if let Some(task) = video_task.take() { task.abort(); }
                                         // Start from 0.0 as durations may differ
+                                        video_frame_count = 0;
+                                        state.video_playback_pos = 0.0;
                                         video_task = Some(spawn_video_task(url, 0.0, tx_video_frame.clone(), state.video_area_size.clone()));
                                     }
                                 }
@@ -518,7 +525,12 @@ fn parse_lrc(lrc: &str) -> Vec<(f64, String)> {
     result
 }
 
-fn spawn_video_task(url: String, start_pos: f64, tx: tokio::sync::mpsc::Sender<crate::renderer::OdinVideoFrame>, video_area_size: std::sync::Arc<std::sync::RwLock<(u16, u16)>>) -> tokio::task::JoinHandle<()> {
+fn spawn_video_task(
+    url: String, 
+    start_pos: f64, 
+    tx: tokio::sync::mpsc::Sender<crate::renderer::OdinVideoFrame>, 
+    video_area_size: std::sync::Arc<std::sync::RwLock<(u16, u16)>>
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         use tokio::io::AsyncReadExt;
 

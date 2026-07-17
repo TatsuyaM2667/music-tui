@@ -182,8 +182,9 @@ fn render_controls(frame: &mut Frame, state: &mut AppState, area: Rect) {
     });
 
     if let Some(t) = playing_track {
-        let pos = state.playback_pos;
-        let duration = t.duration.max(1.0);
+        let pos = if state.is_playing_video { state.video_playback_pos } else { state.playback_pos };
+        let track_duration = t.duration.max(1.0);
+        let duration = if state.is_playing_video && state.video_duration > 0.0 { state.video_duration } else { track_duration };
         let percent = ((pos / duration) * 100.0).min(100.0) as u16;
         
         // --- 可視化された再生バー ---
