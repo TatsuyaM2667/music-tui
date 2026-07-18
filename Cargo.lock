@@ -3315,11 +3315,12 @@ dependencies = [
 
 [[package]]
 name = "terminal-pixel-animation"
-version = "0.1.0"
+version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac0ec09e13b986c6f88f5dc5643616b7258be4e19f0a7ff74e2074ab9c0ea849"
+checksum = "0123bb2cf54ef88ed40b66b5555214dc1ea4c72eec59158dc472489a9473ee27"
 dependencies = [
  "libc",
+ "wasm-bindgen",
 ]
 
 [[package]]
