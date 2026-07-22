@@ -1,13 +1,13 @@
 use crate::api::TrackInfo;
-use ratatui::widgets::ListState;
-use ratatui::layout::Rect;
-use std::collections::{HashSet, HashMap};
-use std::fs;
-use std::time::Instant;
 use image::DynamicImage;
+use ratatui::layout::Rect;
+use ratatui::widgets::ListState;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::Protocol;
-use souvlaki::{MediaControls, MediaControlEvent};
+use souvlaki::{MediaControlEvent, MediaControls};
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::time::Instant;
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,11 +43,11 @@ impl MenuSelection {
 
     pub fn label(&self) -> &'static str {
         match self {
-            MenuSelection::AllTracks => "♫ 全曲",
-            MenuSelection::Artists => "👤 アーティスト",
-            MenuSelection::Albums => "💿 アルバム",
-            MenuSelection::Favorites => "⭐ お気に入り",
-            MenuSelection::Playlists => "📁 プレイリスト",
+            MenuSelection::AllTracks => "♫ ALL SONGS",
+            MenuSelection::Artists => " ARTISTS",
+            MenuSelection::Albums => " ALBUMS",
+            MenuSelection::Favorites => " FAVORITES",
+            MenuSelection::Playlists => " PLAYLISTS",
         }
     }
 }
@@ -241,7 +241,7 @@ impl AppState {
     pub fn save_state(&self) -> Result<(), anyhow::Error> {
         let data = serde_json::to_string(&self.favorites)?;
         fs::write(FAV_FILE, data)?;
-        
+
         let pl_data = serde_json::to_string(&self.playlists)?;
         fs::write(PLAYLISTS_FILE, pl_data)?;
         Ok(())
@@ -256,8 +256,14 @@ impl AppState {
     }
 
     pub fn current_track(&self) -> Option<&TrackInfo> {
-        if self.tracks.is_empty() || self.filtered_indices.is_empty() { return None; }
-        let idx = if self.current >= self.filtered_indices.len() { self.filtered_indices[0] } else { self.filtered_indices[self.current] };
+        if self.tracks.is_empty() || self.filtered_indices.is_empty() {
+            return None;
+        }
+        let idx = if self.current >= self.filtered_indices.len() {
+            self.filtered_indices[0]
+        } else {
+            self.filtered_indices[self.current]
+        };
         Some(&self.tracks[idx])
     }
 
@@ -265,22 +271,26 @@ impl AppState {
         let search_lower = self.search.to_lowercase();
 
         let base_indices: Vec<usize> = match &self.content_view {
-            ContentView::ArtistTracks(artist) => {
-                self.tracks.iter().enumerate()
-                    .filter(|(_, t)| t.artist == *artist)
-                    .map(|(i, _)| i)
-                    .collect()
-            }
-            ContentView::AlbumTracks(album) => {
-                self.tracks.iter().enumerate()
-                    .filter(|(_, t)| t.album == *album)
-                    .map(|(i, _)| i)
-                    .collect()
-            }
+            ContentView::ArtistTracks(artist) => self
+                .tracks
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.artist == *artist)
+                .map(|(i, _)| i)
+                .collect(),
+            ContentView::AlbumTracks(album) => self
+                .tracks
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.album == *album)
+                .map(|(i, _)| i)
+                .collect(),
             ContentView::PlaylistTracks(name) => {
                 if let Some(paths) = self.playlists.get(name) {
                     let path_set: HashSet<_> = paths.iter().collect();
-                    self.tracks.iter().enumerate()
+                    self.tracks
+                        .iter()
+                        .enumerate()
                         .filter(|(_, t)| path_set.contains(&t.path))
                         .map(|(i, _)| i)
                         .collect()
@@ -288,34 +298,43 @@ impl AppState {
                     (0..self.tracks.len()).collect()
                 }
             }
-            ContentView::Favorites => {
-                self.tracks.iter().enumerate()
-                    .filter(|(_, t)| self.favorites.contains(&t.path))
-                    .map(|(i, _)| i)
-                    .collect()
-            }
-            ContentView::TrackList if self.show_favorites_only => {
-                self.tracks.iter().enumerate()
-                    .filter(|(_, t)| self.favorites.contains(&t.path))
-                    .map(|(i, _)| i)
-                    .collect()
-            }
+            ContentView::Favorites => self
+                .tracks
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| self.favorites.contains(&t.path))
+                .map(|(i, _)| i)
+                .collect(),
+            ContentView::TrackList if self.show_favorites_only => self
+                .tracks
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| self.favorites.contains(&t.path))
+                .map(|(i, _)| i)
+                .collect(),
             _ => (0..self.tracks.len()).collect(),
         };
 
         self.filtered_indices = if search_lower.is_empty() {
             base_indices
         } else {
-            base_indices.into_iter().filter(|&i| {
-                let t = &self.tracks[i];
-                t.title.to_lowercase().contains(&search_lower)
-                    || t.artist.to_lowercase().contains(&search_lower)
-                    || t.album.to_lowercase().contains(&search_lower)
-            }).collect()
+            base_indices
+                .into_iter()
+                .filter(|&i| {
+                    let t = &self.tracks[i];
+                    t.title.to_lowercase().contains(&search_lower)
+                        || t.artist.to_lowercase().contains(&search_lower)
+                        || t.album.to_lowercase().contains(&search_lower)
+                })
+                .collect()
         };
 
         if self.current >= self.filtered_indices.len() {
-            self.current = if self.filtered_indices.is_empty() { 0 } else { self.filtered_indices.len() - 1 };
+            self.current = if self.filtered_indices.is_empty() {
+                0
+            } else {
+                self.filtered_indices.len() - 1
+            };
         }
         let content_max = match &self.content_view {
             ContentView::ArtistList => self.filtered_artist_list.len(),
@@ -333,11 +352,15 @@ impl AppState {
             self.filtered_artist_list = self.artist_list.clone();
             self.filtered_album_list = self.album_list.clone();
         } else {
-            self.filtered_artist_list = self.artist_list.iter()
+            self.filtered_artist_list = self
+                .artist_list
+                .iter()
                 .filter(|a| a.to_lowercase().contains(&search_lower))
                 .cloned()
                 .collect();
-            self.filtered_album_list = self.album_list.iter()
+            self.filtered_album_list = self
+                .album_list
+                .iter()
                 .filter(|a| a.to_lowercase().contains(&search_lower))
                 .cloned()
                 .collect();
@@ -370,13 +393,21 @@ impl AppState {
     }
 
     pub fn move_track(&mut self, up: bool) {
-        if self.filtered_indices.len() < 2 { return; }
-        if self.current >= self.filtered_indices.len() { return; }
+        if self.filtered_indices.len() < 2 {
+            return;
+        }
+        if self.current >= self.filtered_indices.len() {
+            return;
+        }
         let target_idx = if up {
-            if self.current == 0 { return; }
+            if self.current == 0 {
+                return;
+            }
             self.current - 1
         } else {
-            if self.current >= self.filtered_indices.len() - 1 { return; }
+            if self.current >= self.filtered_indices.len() - 1 {
+                return;
+            }
             self.current + 1
         };
         let actual_idx = self.filtered_indices[self.current];
@@ -392,7 +423,9 @@ impl AppState {
     /// Rebuild the cached artist and album lists from tracks
     pub fn finalize_loading(&mut self) {
         self.tracks.sort_by(|a, b| {
-            a.artist.to_lowercase().cmp(&b.artist.to_lowercase())
+            a.artist
+                .to_lowercase()
+                .cmp(&b.artist.to_lowercase())
                 .then_with(|| a.album.to_lowercase().cmp(&b.album.to_lowercase()))
                 .then_with(|| a.track_number.cmp(&b.track_number))
                 .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
@@ -401,7 +434,9 @@ impl AppState {
     }
 
     pub fn rebuild_caches(&mut self) {
-        let mut artists: Vec<String> = self.tracks.iter()
+        let mut artists: Vec<String> = self
+            .tracks
+            .iter()
             .map(|t| t.artist.clone())
             .collect::<HashSet<_>>()
             .into_iter()
@@ -457,13 +492,19 @@ impl AppState {
     /// Filter tracks for a specific artist or album
     pub fn filter_by_artist(&mut self, artist: &str) {
         let search_lower = self.search.to_lowercase();
-        self.filtered_indices = self.tracks.iter().enumerate().filter(|(_, t)| {
-            let matches_artist = t.artist == artist;
-            let matches_search = search_lower.is_empty() || 
-                t.title.to_lowercase().contains(&search_lower) ||
-                t.artist.to_lowercase().contains(&search_lower);
-            matches_artist && matches_search
-        }).map(|(i, _)| i).collect();
+        self.filtered_indices = self
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| {
+                let matches_artist = t.artist == artist;
+                let matches_search = search_lower.is_empty()
+                    || t.title.to_lowercase().contains(&search_lower)
+                    || t.artist.to_lowercase().contains(&search_lower);
+                matches_artist && matches_search
+            })
+            .map(|(i, _)| i)
+            .collect();
         self.current = 0;
         self.list_state.select(Some(0));
         self.content_current = 0;
@@ -473,13 +514,19 @@ impl AppState {
 
     pub fn filter_by_album(&mut self, album: &str) {
         let search_lower = self.search.to_lowercase();
-        self.filtered_indices = self.tracks.iter().enumerate().filter(|(_, t)| {
-            let matches_album = t.album == album;
-            let matches_search = search_lower.is_empty() || 
-                t.title.to_lowercase().contains(&search_lower) ||
-                t.album.to_lowercase().contains(&search_lower);
-            matches_album && matches_search
-        }).map(|(i, _)| i).collect();
+        self.filtered_indices = self
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| {
+                let matches_album = t.album == album;
+                let matches_search = search_lower.is_empty()
+                    || t.title.to_lowercase().contains(&search_lower)
+                    || t.album.to_lowercase().contains(&search_lower);
+                matches_album && matches_search
+            })
+            .map(|(i, _)| i)
+            .collect();
         self.current = 0;
         self.list_state.select(Some(0));
         self.content_current = 0;
@@ -494,14 +541,20 @@ impl AppState {
             ContentView::ArtistList => self.filtered_artist_list.len(),
             ContentView::AlbumList => self.filtered_album_list.len(),
             ContentView::PlaylistsList => self.playlists.len(),
-            ContentView::ArtistTracks(_) | ContentView::AlbumTracks(_) | ContentView::PlaylistTracks(_) | ContentView::Favorites => self.filtered_indices.len(),
+            ContentView::ArtistTracks(_)
+            | ContentView::AlbumTracks(_)
+            | ContentView::PlaylistTracks(_)
+            | ContentView::Favorites => self.filtered_indices.len(),
         }
     }
 
     pub fn filter_by_playlist(&mut self, playlist: &str) {
         if let Some(paths) = self.playlists.get(playlist) {
             let path_set: HashSet<_> = paths.iter().collect();
-            self.filtered_indices = self.tracks.iter().enumerate()
+            self.filtered_indices = self
+                .tracks
+                .iter()
+                .enumerate()
                 .filter(|(_, t)| path_set.contains(&t.path))
                 .map(|(i, _)| i)
                 .collect();
