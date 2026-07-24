@@ -62,16 +62,15 @@ export default {
       rawKey = path.replace("/lyrics/", "");
     }
 
-    if (path.startsWith("/stream/")) {
-      const rawPath = url.pathname.replace("/stream/", ""); // エンコードされたままのパス
-      const decodedPath = decodeURIComponent(rawPath); // デコードされたパス
+    if (rawKey !== null) {
+      const decodedPath = decodeURIComponent(rawKey); // デコードされたパス
 
       const keysToTry = new Set([
         decodedPath,
         decodedPath.startsWith("/") ? decodedPath.slice(1) : decodedPath,
         decodedPath.startsWith("/") ? decodedPath : "/" + decodedPath,
-        rawPath,
-        rawPath.startsWith("/") ? rawPath.slice(1) : rawPath,
+        rawKey,
+        rawKey.startsWith("/") ? rawKey.slice(1) : rawKey,
       ]);
 
       for (const key of Array.from(keysToTry)) {
