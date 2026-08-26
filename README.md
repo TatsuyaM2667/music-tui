@@ -1,4 +1,5 @@
 # music-tui
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Z1Y325S0VH)
 
 [![Rust](https://img.shields.io/badge/language-Rust-orange.svg)](https://www.rust-lang.org/)
 [![Odin](https://img.shields.io/badge/language-Odin-blueviolet.svg)](https://odin-lang.org/)
